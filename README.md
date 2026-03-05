@@ -1,7 +1,7 @@
 # Selective-MSMS
 Code for **"When Should We Trust the Annotation? Selective Prediction for Molecular Structure Retrieval from Mass Spectra"**.
 
-We introduce a selective prediction framework for molecular structure retrieval from tandem mass spectra (MS/MS), enabling models to abstain from predictions when uncertainty is too high. The framework evaluates uncertainty quantification strategies at two levels of granularity — fingerprint-level and retrieval-level — and applies distribution-free risk control to obtain subsets of annotations with provable error guarantees.
+We introduce a selective prediction framework for molecular structure retrieval from tandem mass spectra (MS/MS), enabling models to abstain from predictions when uncertainty is too high.
 
 All experiments are conducted on the [MassSpecGym](https://github.com/pluskal-lab/MassSpecGym) benchmark.
 
@@ -25,31 +25,30 @@ pip install -e ./selective-msms/
 
 ```
 selective-msms/
-├── ms_uq/                          # Python package
-│   ├── core/                       # Entropy, similarity functions
-│   ├── models/                     # MLP architecture, Laplace approximation
-│   ├── inference/                  # Ensemble/MC Dropout sampling, retrieval scoring
-│   ├── unc_measures/               # Uncertainty measures (bitwise, retrieval, distance)
-│   ├── evaluation/                 # Metrics, rejection curves, SGR, visualisation
-│   ├── utils/                      # Data loading, checkpoint utilities
-│   ├── data.py                     # Dataset with precomputed fingerprints
-│   └── loss.py                     # Fingerprint prediction losses
-├── scripts/                        # Entry-point scripts
+├── ms_uq/                          
+│   ├── core/                       
+│   ├── models/                     
+│   ├── inference/                  
+│   ├── unc_measures/               
+│   ├── evaluation/                 
+│   ├── utils/                      
+│   ├── data.py                     
+│   └── loss.py                     
+├── scripts/                        
 │   ├── train.py                    # Train a single model
-│   ├── train_ensemble.py           # Train a deep ensemble
-│   ├── make_predictions.py         # Generate predictions (ensemble/MC dropout/Laplace)
-│   ├── run_evaluation.py           # Compute RC curves, AURC, correlation analysis
+│   ├── train_ensemble.py           # Train a deep ensemble or mc dropout model
+│   ├── make_predictions.py         # Generate predictions 
+│   ├── run_evaluation.py           # Compute RC curves, AURC, correlation analysis (either with prediciotns or from scratch)
 │   ├── run_sgr_evaluation.py       # Risk-controlled evaluation (SGR)
 │   └── plot_sgr_analysis.py        # SGR coverage figure
-├── config/                         # YAML configuration files
-│   ├── eval.yml                    # Main evaluation config
-│   └── sgr.yml                     # SGR risk control config
+├── config/                         
+│   └── sgr.yml                     
 └── tests/
 ```
 
 ## Reproducing Paper Results
 
-The pipeline has four stages. Each stage reads from the output of the previous one.
+Currently still under construction!
 
 ### 1. Train ensemble
 
@@ -99,20 +98,11 @@ python scripts/run_sgr_evaluation.py --config config/sgr.yml
 
 This computes coverage at target risk levels with the SGR algorithm and generates calibration results.
 
-## Scoring Functions
-
-The framework evaluates scoring functions from three families:
-
-| Family | Measures | Level |
-|--------|----------|-------|
-| First-order retrieval | Confidence (κ_conf), Score gap (κ_gap) | Retrieval |
-| Second-order uncertainty | Aleatoric (κ_ret^al), Epistemic (κ_ret^ep), Rank variance (κ_rank) | Retrieval |
-| Bitwise uncertainty | Bitwise aleatoric, epistemic, total | Fingerprint |
-| Distance-based | k-NN distance, Mahalanobis distance | Embedding |
 
 ## Acknowledgements
 
-The model architecture and training code are adapted from [ms-mole](https://github.com/gdewael/ms-mole) by De Waele et al. We thank the authors for making their code publicly available.
+The model architecture and training code are adapted from [ms-mole](https://github.com/gdewael/ms-mole) by De Waele et al.
+
 
 This work builds on the [MassSpecGym](https://github.com/pluskal-lab/MassSpecGym) benchmark by Bushuiev et al.
 
