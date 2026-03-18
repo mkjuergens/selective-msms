@@ -15,7 +15,8 @@ from ms_uq.core.similarity import (
     cosine_similarity_matrix,
     cosine_similarity_pairwise,
     tanimoto_similarity,
-    hamming_distance
+    hamming_distance,
+    similarity_matrix
 )
 
 __all__ = [
@@ -31,4 +32,5 @@ __all__ = [
     "cosine_similarity_pairwise",
     "tanimoto_similarity",
     "hamming_distance",
+    "similarity_matrix",
 ]

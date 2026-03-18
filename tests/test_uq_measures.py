@@ -10,7 +10,7 @@ def synth_tests():
     N, S, K, C = 8, 5, 16, 7
 
     P = torch.rand(N, S, K)
-    uq_b = BitwiseUncertainty(reduce="sum")(P)
+    uq_b = BitwiseUncertainty(aggregate="sum")(P)
     for k in ("aleatoric_var","epistemic_var","total_var","aleatoric_ent","epistemic_ent","total_ent"):
         assert uq_b[k].shape == (N,), f"bitwise {k} wrong shape: {uq_b[k].shape}"
     # invariants

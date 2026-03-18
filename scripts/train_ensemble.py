@@ -11,9 +11,6 @@ import shutil
 from typing import Iterable, List
 
 
-# ---------------------------
-# Small utilities
-# ---------------------------
 def boolean(v):
     if isinstance(v, bool):
         return v
@@ -28,7 +25,6 @@ def _ts() -> str:
 
 
 def _train_py_path() -> str:
-    # Resolve train.py robustly; allow override via env var if you move files.
     env = os.environ.get("MSUQ_TRAIN_PY")
     if env:
         return env
@@ -36,7 +32,6 @@ def _train_py_path() -> str:
     cand = here / "train.py"
     if cand.exists():
         return str(cand)
-    # Fallback to your absolute path if needed
     return "/data/home/mira/MS-UQ/ms_uq/train.py"
 
 
@@ -116,9 +111,7 @@ def _normalize_devices(argval) -> List[int]:
     return out
 
 
-# ---------------------------
-# Main CLI
-# ---------------------------
+# MAIN LAUNCHER
 def main():
     class Fmt(argparse.ArgumentDefaultsHelpFormatter, argparse.MetavarTypeHelpFormatter): pass
     p = argparse.ArgumentParser("Experiment launcher", formatter_class=Fmt)
@@ -291,16 +284,14 @@ def main():
         _finalize_best_by_metric(exp_root, member_dirs)
         return
 
-    # ---------------------------
-    # SINGLE / MC-DROPOUT: also pin to a concrete GPU (default: first in list)
-    # ---------------------------
+   
     model_dir = exp_root / "single" / "model"
     model_dir.mkdir(parents=True, exist_ok=True)
 
     # Pick a physical GPU to run this single job on
     phys_gpu = devices[0]
     child_env = os.environ.copy()
-    child_env["CUDA_VISIBLE_DEVICES"] = str(phys_gpu)   # <— now it will see exactly one GPU as cuda:0
+    child_env["CUDA_VISIBLE_DEVICES"] = str(phys_gpu)  
 
     argv = [
         dataset_path, helper_dir, str(model_dir),

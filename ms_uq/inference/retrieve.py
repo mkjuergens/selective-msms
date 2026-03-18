@@ -19,7 +19,7 @@ from torch import Tensor, nn
 import torch.nn.functional as F
 from tqdm import tqdm
 
-from ms_uq.core.similarity import similarity_matrix
+from ms_uq.core import similarity_matrix
 
 
 AggregationMethod = Literal["score", "fingerprint", "probability", "max_score_topk"]

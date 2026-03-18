@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=64", "setuptools-scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ms-uq"
+version = "0.1.0"
+description = "Selective prediction for molecular structure retrieval from tandem mass spectra"
+readme = "README.md"
+license = {file = "LICENSE"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Mira Juergens"},
+    {name = "Gaetan De Waele"},
+    {name = "Morteza Rakhshaninejad"},
+    {name = "Willem Waegeman"},
+]
+
+dependencies = [
+    "torch>=2.0",
+    "pytorch-lightning>=2.0",
+    "torchmetrics",
+    "numpy",
+    "pandas",
+    "scipy",
+    "scikit-learn",
+    "matplotlib",
+    "tqdm",
+    "pyyaml",
+    "massspecgym",
+]
+
+[project.optional-dependencies]
+dev = [
+    "tensorboard",
+    "jupyter",
+    "pytest",
+]
+
+[project.urls]
+Repository = "https://github.com/BioML-UGent/selective-msms"
+Paper = "https://arxiv.org/abs/TODO"
+
+[tool.setuptools.packages.find]
+include = ["ms_uq*"]
