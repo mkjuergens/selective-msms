@@ -1,12 +1,3 @@
-#!/usr/bin/env python3
-"""
-Evaluation Pipeline for Molecular Retrieval with Uncertainty Quantification.
-
-Usage:
-    python -m ms_uq.run_evaluation --config config/eval.yml --group ensemble
-    python -m ms_uq.run_evaluation --pred_dir /path/to/preds --out_dir /path/to/out ...
-"""
-
 from __future__ import annotations
 import argparse
 import gc

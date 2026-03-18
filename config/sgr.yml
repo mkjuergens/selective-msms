@@ -14,10 +14,10 @@ common:
   num_workers: 4
 
 sgr:
-  # Confidence level
-  delta: 0.001
+  # Confidence level: P(guarantee holds) >= 1 - delta
+  delta: 0.005
 
-  # retrieval loss
+  # ── Retrieval losses ──
   retrieval_losses: [hit@1, hit@5, hit@20]
   retrieval_target_risks: [0.1, 0.2, 0.3, 0.4, 0.5]
 
@@ -30,7 +30,7 @@ sgr:
     - rank_var_5
     - rank_var_20
 
-  # additionally, we can look at fingerprint loss as risk we want to control
+  # ── Fingerprint losses ──
   fingerprint_losses: [tanimoto, cosine, hamming]
   fingerprint_target_risks:
     tanimoto: [0.86, 0.88, 0.90, 0.92]
@@ -42,11 +42,36 @@ sgr:
     - bitwise_epistemic
     - bitwise_total
 
+# ── Model groups ──
+# For ranking-loss models, provide ranker_path (or place ranker.pt in pred_dir).
+# Without a ranker, scores are computed using cosine similarity.
 model_groups:
   ensemble:
     out_subdir: ensemble
     models:
+      ranking:
+        pred_dir: outputs/predictions/ensemble_ranking
+        label: Ensemble (Ranking)
+        aggregation: score
+        # ranker_path: outputs/predictions/ensemble_ranking/ranker.pt  # auto-detected from pred_dir
+
       focal:
         pred_dir: outputs/predictions/ensemble_focal
         label: Ensemble (Focal)
+        aggregation: score
+
+  mc_dropout:
+    out_subdir: mc_dropout
+    models:
+      ranking:
+        pred_dir: outputs/predictions/mcdo_ranking
+        label: MC Dropout (Ranking)
+        aggregation: score
+
+  laplace:
+    out_subdir: laplace
+    models:
+      ranking:
+        pred_dir: outputs/predictions/laplace_ranking
+        label: Laplace (Ranking)
         aggregation: score

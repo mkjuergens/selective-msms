@@ -5,7 +5,14 @@ We introduce a selective prediction framework for molecular structure retrieval 
 
 All experiments are conducted on the [MassSpecGym](https://github.com/pluskal-lab/MassSpecGym) benchmark.
 
-<!-- > **Paper**: [arXiv link TODO] · **Data**: [MassSpecGym](https://github.com/pluskal-lab/MassSpecGym) -->
+## Overview
+<p align="center">
+  <img src="docs/figures/figure_1.png" alt="Overview of the methodology" width="700"/>
+</p>
+
+<p align="center">
+  <em></em>
+</p>
 
 ## Installation
 
@@ -58,13 +65,79 @@ selective-msms/
 │   ├── run_sgr_evaluation.py       # evaluation script for risk control analysis
 │   └── plot_sgr_analysis.py        
 ├── config/                         
-│   └── sgr.yml                     
+│   └── sgr.yml                     # config for selective-risk-control analysis
+    └── eval.yml                    # config for running risk-coverage analysis                   
 └── tests/
 ```
+
+
+## Pre-Trained Model Predictions
+
+CURRENTLY UNDER CONSTRUCTION
+
+We provide pre-computed predictions for the models used in the paper,
+so that all evaluation results (Tables 2–4, Figures 2–5) can be
+reproduced without training.
+
+**Download**: [Zenodo DOI TODO](https://zenodo.org/TODO)
+
+<!-- Alternative: [HuggingFace Hub](https://huggingface.co/datasets/BioML-UGent/selective-msms-predictions) -->
+
+The archive contains one directory per model:
+
+```
+predictions/
+├── ensemble_ranking/           # Deep Ensemble (S=5), ranking loss
+│   ├── fp_probs.pt             #   (N, 5, 4096) bitwise probabilities
+│   └── ranker.pt               #   learned biencoder scorer
+├── ensemble_focal/             # Deep Ensemble (S=5), focal loss
+│   └── fp_probs.pt
+├── mcdo_ranking/               # MC Dropout (S=50), ranking loss
+│   ├── fp_probs.pt
+│   └── ranker.pt
+├── mcdo_focal/                 # MC Dropout (S=50), focal loss
+│   └── fp_probs.pt
+├── laplace_ranking/            # Laplace (S=50), ranking loss
+│   ├── fp_probs.pt
+│   └── ranker.pt
+├── laplace_focal/              # Laplace (S=50), focal loss
+│   └── fp_probs.pt
+└── ground_truth_bits_labels_test.pt   # shared ground truth
+```
+
+Each `fp_probs.pt` is a dict `{"stack": tensor(N, S, 4096), "meta": {...}}` containing
+per-sample bitwise fingerprint probabilities from the test set.
+Ranking-loss models additionally include a `ranker.pt` (learned biencoder similarity);
+without it, scoring falls back to cosine similarity, which gives different (lower) performance for these models.
+
+### Evaluate without training
+
+After downloading and extracting the predictions to `outputs/predictions/`:
+
+```bash
+# 1. Prepare MassSpecGym data (see Data Preparation below)
+
+# 2. Update paths in config/eval.yml to point to your data and predictions
+
+# 3. Run evaluation (produces risk-coverage curves, AURC tables, plots)
+python scripts/run_evaluation.py --config config/eval.yml --group ensemble
+
+# 4. Run SGR analysis (produces risk-controlled coverage, calibration plots)
+python scripts/run_sgr_evaluation.py --config config/sgr.yml --group ensemble
+```
+
+The evaluation scripts detect `fp_probs.pt` in each `pred_dir` and skip
+prediction generation, proceeding directly to candidate scoring and
+uncertainty analysis.
 
 ## Reproducing Paper Results
 
 Currently still under construction!
+
+
+
+### Full pipeline (training from scratch)
+
 
 ### 1. Train a model (single, Deep Ensemble, MC Dropout)
 To train a single model or an ensemble model using the architecture and the ranking loss function, run the following command. Needs to contain paths to massspecgym data.
@@ -122,6 +195,23 @@ python scripts/run_sgr_evaluation.py --config config/sgr.yml --group ensemble
 
 
 This computes coverage at target risk levels with the SGR algorithm and generates calibration results.
+
+
+## Scoring Functions
+
+The framework compares the following scoring functions for selective prediction:
+
+| Scoring function | Level | Order | Description |
+|---|---|---|---|
+| Confidence (max prob) | Retrieval | 1st | Maximum softmax probability over candidates |
+| Score gap | Retrieval | 1st | Difference between top-1 and top-2 aggregated scores |
+| Margin | Retrieval | 1st | Difference between top-1 and top-2 probabilities |
+| Retrieval entropy (A/E/T) | Retrieval | 2nd | Entropy decomposition over candidate distributions |
+| Rank variance | Retrieval | 2nd | Variance of candidate ranks across posterior samples |
+| Bitwise entropy (A/E/T) | Fingerprint | 2nd | Entropy decomposition over predicted fingerprint bits |
+| k-NN distance | Input | 1st | Deep k-nearest-neighbor distance |
+| Mahalanobis distance | Input | 1st | Mahalanobis distance in encoder space |
+
 
 
 ## Acknowledgements
