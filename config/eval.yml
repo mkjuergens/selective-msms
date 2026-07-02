@@ -47,8 +47,8 @@ common:
   topk_temp: 0.1
 
   # ── Runtime ──
-  device: cuda:0
-  batch_size: 256
+  device: cuda:0 # use "cpu" for CPU-only debugging
+  batch_size: 256 # reduce this on smaller GPUs or CPU
   num_workers: 2
   bin_width: 0.1
 

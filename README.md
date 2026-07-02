@@ -213,6 +213,57 @@ The framework compares the following scoring functions for selective prediction:
 | Mahalanobis distance | Input | 1st | Mahalanobis distance in encoder space |
 
 
+## Device Usage
+
+Training is GPU-oriented. By default, `scripts/train_ensemble.py` trains a
+5-member ensemble sequentially on one CUDA device (`--devices "[0]"`). To train
+ensemble members in parallel, pass multiple GPU indices, e.g.
+`--devices "[0,1,2,3]"`; the launcher assigns one ensemble member process to
+each selected GPU and runs at most `len(--devices)` members concurrently unless
+`--max_parallel` is set.
+
+This is not multi-GPU training of a single model. Each ensemble member is trained
+as an independent process on one selected GPU.
+
+Evaluation has two stages. Generating `fp_probs.pt` from checkpoints and
+ranker-based candidate scoring can use CUDA via the YAML `device` field, e.g.
+`device: cuda:0`. Once prediction and score files are saved, the downstream
+risk-coverage analysis, AURC/relAURC tables, SGR summaries, and visualisations
+can be run on CPU by setting `device: cpu`.
+
+## Smoke Test
+
+The following commands run a minimal end-to-end check of the training and
+evaluation pipeline. This is intended only to verify that the code runs; the
+resulting metrics are not meaningful.
+
+```bash
+# Train a tiny 2-member ensemble for one epoch and one batch
+python scripts/train_ensemble.py \
+  /path/to/MassSpecGym.tsv \
+  /path/to/helper_dir \
+  outputs/smoke_train \
+  --method ensemble \
+  --n_members 2 \
+  --max_parallel 1 \
+  --devices "[0]" \
+  --accelerator gpu \
+  --precision 32-true \
+  --batch_size 4 \
+  --bin_width 1.0 \
+  --layer_dim 64 \
+  --n_layers 2 \
+  --bitwise_loss bce \
+  --rankwise_loss bienc \
+  --rankwise_temp 0.003 \
+  --max_epochs 1 \
+  --limit_train_batches 1 \
+  --limit_val_batches 1 \
+  --num_sanity_val_steps 0 \
+  --skip_test=True \
+  --tag smoke
+
+```
 
 ## Acknowledgements
 
