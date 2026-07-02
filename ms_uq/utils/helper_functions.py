@@ -10,7 +10,7 @@ from pathlib import Path
 
 import torch
 from torch import Tensor
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 
 from ms_uq.data import RetrievalDataset_PrecompFPandInchi
 from massspecgym.data.transforms import SpecBinner, MolFingerprinter
@@ -66,6 +66,7 @@ def make_test_loader(
     batch_size: int = 256,
     num_workers: int = 2,
     pin_memory: bool = False,
+    subset_size: Optional[int] = None,
 ) -> DataLoader:
     """
     Create test dataloader with memory-efficient and DETERMINISTIC settings.
@@ -80,13 +81,17 @@ def make_test_loader(
     dm.setup(stage="test")
     
     dl_orig = dm.test_dataloader()
+    dataset = dl_orig.dataset
+    if subset_size is not None:
+        n = min(int(subset_size), len(dataset))
+        dataset = Subset(dataset, range(n))
     
     # Create a generator with fixed seed for reproducibility
     generator = torch.Generator()
     generator.manual_seed(42)
     
     return DataLoader(
-        dl_orig.dataset,
+        dataset,
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,

@@ -49,6 +49,7 @@ class SGRConfig:
     batch_size: int = 256
     num_workers: int = 2
     bin_width: float = 0.1
+    test_subset_size: Optional[int] = None
     overwrite: bool = False
 
 
@@ -102,8 +103,10 @@ def load_data(pred_dir: Path, out_dir: Path, config: SGRConfig, loader=None):
     else:
         print(f"  Computing scores (ranker={'yes' if ranker else 'no'})...")
         if loader is None:
-            loader = make_test_loader(config.dataset_tsv, config.helper_dir, config.bin_width,
-                                      config.batch_size, config.num_workers)
+            loader = make_test_loader(
+                config.dataset_tsv, config.helper_dir, config.bin_width,
+                config.batch_size, config.num_workers, subset_size=config.test_subset_size
+            )
         data = scores_from_loader(Pbits, loader, metric=config.metric, aggregation=config.aggregation,
                                   temperature=config.temperature, return_labels=True,
                                   return_per_sample=True, ranker=ranker, device=config.device)
@@ -124,6 +127,8 @@ def compute_losses(Pbits, scores_flat, ptr, labels_flat, y_bits, config: SGRConf
             losses[loss] = (1 - hits).numpy()
 
     if y_bits is not None:
+        if y_bits.shape[0] != Pbits.shape[0]:
+            y_bits = y_bits[:Pbits.shape[0]]
         fp_pred = Pbits.mean(dim=1) if Pbits.dim() == 3 else Pbits
         fp_losses = compute_fingerprint_losses(fp_pred, y_bits)
         for name in config.fingerprint_losses:
@@ -227,7 +232,7 @@ def run_sgr_evaluation(pred_dir: Path, out_dir: Path, config: SGRConfig,
     retrieval_losses = {k: v for k, v in all_losses.items() if k.startswith("hit@")}
     fingerprint_losses = {k: v for k, v in all_losses.items() if k in config.fingerprint_losses}
 
-    print(f"  Samples: {len(labels_flat)}")
+    print(f"  Samples: {Pbits.shape[0]}")
     print(f"  Retrieval: {list(retrieval_losses.keys())} | Fingerprint: {list(fingerprint_losses.keys())}")
 
     # Run SGR
@@ -279,8 +284,11 @@ def run_from_config(config_path: Path, group: str):
     group_cfg = cfg["model_groups"][group]
     base_out = Path(common["base_out_dir"]) / group_cfg.get("out_subdir", group)
 
-    loader = make_test_loader(common["dataset_tsv"], common["helper_dir"],
-                              common.get("bin_width", 0.1), common.get("batch_size", 256), common.get("num_workers", 2))
+    loader = make_test_loader(
+        common["dataset_tsv"], common["helper_dir"],
+        common.get("bin_width", 0.1), common.get("batch_size", 256), common.get("num_workers", 2),
+        subset_size=common.get("test_subset_size"),
+    )
 
     for model_name, model_cfg in group_cfg["models"].items():
         config = SGRConfig(
@@ -302,6 +310,8 @@ def run_from_config(config_path: Path, group: str):
             device=common.get("device", "cuda:0"),
             batch_size=common.get("batch_size", 256),
             num_workers=common.get("num_workers", 2),
+            bin_width=common.get("bin_width", 0.1),
+            test_subset_size=common.get("test_subset_size"),
             overwrite=model_cfg.get("overwrite", False),
         )
 

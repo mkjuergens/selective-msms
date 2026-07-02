@@ -77,6 +77,7 @@ class EvalConfig:
     batch_size: int = 256
     num_workers: int = 2
     bin_width: float = 0.1
+    test_subset_size: Optional[int] = None
     overwrite: bool = False
 
 
@@ -106,8 +107,10 @@ def generate_predictions(out_dir: Path, config: EvalConfig, loader: Optional[Dat
         return fp_path, ranker_path if ranker_path.exists() else None
     
     if loader is None:
-        loader = make_test_loader(config.dataset_tsv, config.helper_dir, config.bin_width,
-                                   config.batch_size, config.num_workers)
+        loader = make_test_loader(
+            config.dataset_tsv, config.helper_dir, config.bin_width,
+            config.batch_size, config.num_workers, subset_size=config.test_subset_size
+        )
     
     mode = config.mode.lower()
     if mode == "ensemble" and config.ckpt and not config.ckpts and not config.ens_dir:
@@ -449,8 +452,10 @@ def run_evaluation(pred_dir: Path, out_dir: Path, config: EvalConfig,
     print(f"\n{'='*60}\nEvaluating: {label or pred_dir.name}\n{'='*60}")
     
     if loader is None:
-        loader = make_test_loader(config.dataset_tsv, config.helper_dir, config.bin_width,
-                                   config.batch_size, config.num_workers)
+        loader = make_test_loader(
+            config.dataset_tsv, config.helper_dir, config.bin_width,
+            config.batch_size, config.num_workers, subset_size=config.test_subset_size
+        )
     
     fp_path = pred_dir / "fp_probs.pt"
     if not fp_path.exists() or config.overwrite:
@@ -473,6 +478,8 @@ def run_evaluation(pred_dir: Path, out_dir: Path, config: EvalConfig,
     if Pbits is None:
         raise FileNotFoundError(f"No fp_probs.pt in {pred_dir}")
     y_bits, labels_flat = load_ground_truth(gt_path or Path(config.gt_path))
+    if y_bits is not None and y_bits.shape[0] != Pbits.shape[0]:
+        y_bits = y_bits[:Pbits.shape[0]]
     
     # Distance-based uncertainty
     distance_model, test_embeddings = None, None
@@ -495,7 +502,7 @@ def run_evaluation(pred_dir: Path, out_dir: Path, config: EvalConfig,
             result = scores_from_loader(
                 Pbits, loader, metric=config.metric, aggregation=agg,
                 temperature=config.temperature, topk_k=config.topk_k, topk_temp=config.topk_temp,
-                weighted_method=config.weighted_method, return_labels=True, return_per_sample=True,
+                return_labels=True, return_per_sample=True,
                 ranker=ranker, device=config.device,
             )
             torch.save(result, scores_file)
@@ -613,8 +620,10 @@ def _print_summary(agg_results: Dict, member_hits: Dict, config: EvalConfig, out
         # Print relAURC if available
         rel_aurc = _compute_rel_aurc(results["retrieval_aurc"])
         if not rel_aurc.empty and "hit@1" in rel_aurc.columns:
-            best_idx = rel_aurc["hit@1"].idxmin()
-            print(f"  Best κ (relAURC Hit@1): {best_idx} = {rel_aurc.loc[best_idx, 'hit@1']:.4f}")
+            hit1 = rel_aurc["hit@1"].dropna()
+            if not hit1.empty:
+                best_idx = hit1.idxmin()
+                print(f"  Best kappa (relAURC Hit@1): {best_idx} = {hit1.loc[best_idx]:.4f}")
     if member_hits:
         print(f"\nMembers (S={next(iter(member_hits.values())).shape[0]}):")
         ckpt_names = _get_checkpoint_names(config)
@@ -656,10 +665,13 @@ def run_from_config(config_path: Path, group: str):
     group_cfg = cfg["model_groups"][group]
     base_out = Path(common["base_out_dir"]) / group_cfg.get("out_subdir", group)
     
-    loader = make_test_loader(common["dataset_tsv"], common["helper_dir"],
-                               common.get("bin_width", 0.1),
-                               common.get("batch_size", 256),
-                               common.get("num_workers", 2))
+    loader = make_test_loader(
+        common["dataset_tsv"], common["helper_dir"],
+        common.get("bin_width", 0.1),
+        common.get("batch_size", 256),
+        common.get("num_workers", 2),
+        subset_size=common.get("test_subset_size"),
+    )
     
     for model_name, model_cfg in group_cfg["models"].items():
         if model_cfg is None:
@@ -693,6 +705,7 @@ def parse_args():
     ap.add_argument("--batch_size", type=int, default=256)
     ap.add_argument("--num_workers", type=int, default=2)
     ap.add_argument("--bin_width", type=float, default=0.1)
+    ap.add_argument("--test_subset_size", type=int, default=None)
     return ap.parse_args()
 
 
@@ -713,6 +726,7 @@ def main():
             topk_k=args.topk_k, topk_temp=args.topk_temp, temperature=args.temperature,
             top_k_hits=[int(k) for k in args.top_k_hits.split(",")],
             batch_size=args.batch_size, num_workers=args.num_workers, bin_width=args.bin_width,
+            test_subset_size=args.test_subset_size,
         )
         run_evaluation(Path(args.pred_dir), Path(args.out_dir), config,
                        gt_path=Path(args.gt_path), label=args.label)

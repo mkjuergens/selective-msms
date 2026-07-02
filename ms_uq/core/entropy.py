@@ -10,8 +10,9 @@ EPS = 1e-12
 
 def binary_entropy(p: Tensor) -> Tensor:
     """Binary entropy H(p) = -p*log(p) - (1-p)*log(1-p)."""
-    p = p.clamp(EPS, 1 - EPS)
-    return -p * p.log() - (1 - p) * (1 - p).log()
+    p = p.clamp(0, 1)
+    q = 1 - p
+    return -(torch.special.xlogy(p, p) + torch.special.xlogy(q, q))
 
 
 def categorical_entropy(probs: Tensor, dim: int = -1) -> Tensor:

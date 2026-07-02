@@ -12,6 +12,13 @@ from massspecgym.data.transforms import MolFingerprinter, SpecBinner
 from massspecgym.data.data_module import MassSpecDataModule
 from ms_uq.models.fingerprint_mlp import FingerprintPredicter
 
+try:
+    from torch.serialization import add_safe_globals
+    from massspecgym.models.base import Stage
+    add_safe_globals([Stage])
+except Exception:
+    pass
+
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning import Trainer
@@ -33,6 +40,13 @@ def boolean(v):
         return False
     else:
         raise argparse.ArgumentTypeError("Boolean value expected.")
+
+
+def int_or_float(v):
+    s = str(v).strip()
+    if "." in s:
+        return float(s)
+    return int(s)
 
 
 def make_parser() -> argparse.ArgumentParser:
@@ -62,6 +76,8 @@ def make_parser() -> argparse.ArgumentParser:
     p.add_argument("--devices", type=ast.literal_eval, default=[0])
     p.add_argument("--precision", type=str, default="bf16-mixed")
     p.add_argument("--n_workers", type=int, default=4)
+    p.add_argument("--accelerator", type=str, default="gpu",
+                   help='Lightning accelerator, e.g. "gpu", "cpu", or "auto".')
 
     # Model/optim
     p.add_argument("--layer_dim", type=int, default=512)
@@ -99,6 +115,16 @@ def make_parser() -> argparse.ArgumentParser:
                    help="If set, use this as the run root (recommended). Else derive from logs_path.")
     p.add_argument("--save_top_k", type=int, default=1)
     p.add_argument("--save_last", type=boolean, default=True)
+    p.add_argument("--max_epochs", type=int, default=None,
+                   help="Override epoch count; useful for smoke tests.")
+    p.add_argument("--limit_train_batches", type=int_or_float, default=None,
+                   help="Lightning limit_train_batches; int for batches or float fraction.")
+    p.add_argument("--limit_val_batches", type=int_or_float, default=None,
+                   help="Lightning limit_val_batches; int for batches or float fraction.")
+    p.add_argument("--limit_test_batches", type=int_or_float, default=None,
+                   help="Lightning limit_test_batches; int for batches or float fraction.")
+    p.add_argument("--num_sanity_val_steps", type=int, default=None,
+                   help="Override Lightning sanity validation steps.")
 
     return p
 
@@ -235,10 +261,20 @@ def main():
 
     callbacks.extend(cbs.values())
 
-    max_epochs = 250 if args.try_harder else 50
+    max_epochs = args.max_epochs if args.max_epochs is not None else (250 if args.try_harder else 50)
+
+    trainer_kwargs = {}
+    if args.limit_train_batches is not None:
+        trainer_kwargs["limit_train_batches"] = args.limit_train_batches
+    if args.limit_val_batches is not None:
+        trainer_kwargs["limit_val_batches"] = args.limit_val_batches
+    if args.limit_test_batches is not None:
+        trainer_kwargs["limit_test_batches"] = args.limit_test_batches
+    if args.num_sanity_val_steps is not None:
+        trainer_kwargs["num_sanity_val_steps"] = args.num_sanity_val_steps
 
     trainer = Trainer(
-        accelerator="gpu",
+        accelerator=args.accelerator,
         devices=args.devices,
         strategy="auto",
         gradient_clip_val=1,
@@ -247,6 +283,7 @@ def main():
         plugins=[LightningEnvironment()],
         logger=logger,
         precision=args.precision,
+        **trainer_kwargs,
     )
 
     # Pre-train validation

@@ -20,6 +20,13 @@ def boolean(v):
     raise argparse.ArgumentTypeError("Boolean value expected.")
 
 
+def int_or_float(v):
+    s = str(v).strip()
+    if "." in s:
+        return float(s)
+    return int(s)
+
+
 def _ts() -> str:
     return _dt.datetime.now().strftime("%Y%m%d-%H%M")
 
@@ -71,6 +78,20 @@ def _finalize_best_by_metric(exp_root: Path, member_dirs: list[Path]) -> None:
                 link.symlink_to(best)
             except OSError:
                 shutil.copy2(best, link)
+
+
+def _append_optional_train_args(argv: list[str], args) -> None:
+    argv.append(f"--accelerator={args.accelerator}")
+    for name in (
+        "max_epochs",
+        "limit_train_batches",
+        "limit_val_batches",
+        "limit_test_batches",
+        "num_sanity_val_steps",
+    ):
+        value = getattr(args, name)
+        if value is not None:
+            argv.append(f"--{name}={value}")
 
 
 def _normalize_devices(argval) -> List[int]:
@@ -136,6 +157,8 @@ def main():
     p.add_argument("--batch_size", type=int, default=128)
     p.add_argument("--devices", type=str, default="[0]")     # <— ADD type=str
     p.add_argument("--precision", type=str, default="bf16-mixed")
+    p.add_argument("--accelerator", type=str, default="gpu",
+                   help='Lightning accelerator forwarded to train.py.')
 
     p.add_argument("--layer_dim", type=int, default=512)
     p.add_argument("--n_layers", type=int, default=3)
@@ -173,6 +196,16 @@ def main():
     
     p.add_argument("--max_parallel", type=int, default=None,
                    help="Max concurrent members. Default = len(--devices) for ensemble.")
+    p.add_argument("--max_epochs", type=int, default=None,
+                   help="Forwarded to train.py; useful for smoke tests.")
+    p.add_argument("--limit_train_batches", type=int_or_float, default=None,
+                   help="Forwarded to train.py; int batches or float fraction.")
+    p.add_argument("--limit_val_batches", type=int_or_float, default=None,
+                   help="Forwarded to train.py; int batches or float fraction.")
+    p.add_argument("--limit_test_batches", type=int_or_float, default=None,
+                   help="Forwarded to train.py; int batches or float fraction.")
+    p.add_argument("--num_sanity_val_steps", type=int, default=None,
+                   help="Forwarded to train.py.")
 
     args = p.parse_args()
 
@@ -199,8 +232,14 @@ def main():
         "args_forwarded": {
             "bin_width": args.bin_width,
             "batch_size": args.batch_size,
-            "n_workers": args.n_workers,    
+            "n_workers": args.n_workers,
             "precision": args.precision,
+            "accelerator": args.accelerator,
+            "max_epochs": args.max_epochs,
+            "limit_train_batches": args.limit_train_batches,
+            "limit_val_batches": args.limit_val_batches,
+            "limit_test_batches": args.limit_test_batches,
+            "num_sanity_val_steps": args.num_sanity_val_steps,
             "layer_dim": args.layer_dim, "n_layers": args.n_layers, "dropout": args.dropout, "lr": args.lr,
             "bitwise_loss": args.bitwise_loss, "fpwise_loss": args.fpwise_loss, "rankwise_loss": args.rankwise_loss,
             "bitwise_lambd": args.bitwise_lambd, "fpwise_lambd": args.fpwise_lambd, "rankwise_lambd": args.rankwise_lambd,
@@ -218,6 +257,7 @@ def main():
 
         member_dirs: list[Path] = []
         procs: list[tuple[subprocess.Popen, Path]] = []
+        failures: list[tuple[Path, int]] = []
 
         for i in range(args.n_members):
             seed = args.base_seed + i
@@ -263,6 +303,7 @@ def main():
                 f"--save_top_k={args.save_top_k}",            # ADD
                 f"--save_last={args.save_last}",              # ADD
             ]
+            _append_optional_train_args(argv, args)
 
             log_path = member_dir / "train.out"
             cmd = [sys.executable, _train_py_path()] + argv
@@ -274,12 +315,27 @@ def main():
             # throttle to max_parallel
             while len([q for q, _ in procs if q.poll() is None]) >= max_parallel:
                 for q, _lp in list(procs):
-                    if q.poll() is not None:
+                    rc = q.poll()
+                    if rc is not None:
                         procs.remove((q, _lp))
+                        if rc != 0:
+                            failures.append((_lp, rc))
+                if failures:
+                    break
+
+            if failures:
+                break
 
         # wait for the rest
         for q, _lp in procs:
-            q.wait()
+            rc = q.wait()
+            if rc != 0:
+                failures.append((_lp, rc))
+
+        if failures:
+            for log_path, rc in failures:
+                print(f"[launcher] member failed with exit code {rc}; see {log_path}", file=sys.stderr)
+            raise SystemExit(1)
 
         _finalize_best_by_metric(exp_root, member_dirs)
         return
@@ -325,6 +381,7 @@ def main():
         f"--save_last={args.save_last}",                      # ADD
         f"--n_workers={args.n_workers}", 
     ]
+    _append_optional_train_args(argv, args)
     if args.method == "mc_dropout":
         argv.append(f"--mc_dropout_eval={True}")
 

@@ -130,6 +130,37 @@ _CURVE_STYLES = [
     ((0, (5, 2)), "x"),
 ]
 
+_HEATMAP_GROUPS = {
+    "Retrieval": [
+        "confidence",
+        "score_gap",
+        "margin",
+        "retrieval_total",
+        "retrieval_aleatoric",
+        "retrieval_epistemic",
+        "rank_var_1",
+        "rank_var_5",
+        "rank_var_20",
+    ],
+    "Fingerprint": [
+        "bitwise_total",
+        "bitwise_aleatoric",
+        "bitwise_epistemic",
+        "bitwise_epistemic_sparse",
+        "bitwise_epistemic_active",
+    ],
+    "External": [
+        "n_candidates",
+        "ambiguity_ratio",
+        "knn_distance",
+        "mahalanobis",
+        "relative_mahalanobis",
+        "centroid_distance",
+    ],
+    "Baseline": ["oracle", "random"],
+}
+_HEATMAP_ORDER = [m for group in _HEATMAP_GROUPS.values() for m in group]
+
 
 def get_metric_style(name: str) -> Tuple:
     """Return (linestyle, marker) for a metric, with fallback."""
