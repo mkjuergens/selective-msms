@@ -7,10 +7,9 @@ import shutil
 
 import torch
 
-from ms_uq.data import RetrievalDataset_PrecompFPandInchi
-from massspecgym.data.transforms import MolFingerprinter, SpecBinner
 from massspecgym.data.data_module import MassSpecDataModule
-from ms_uq.models.fingerprint_mlp import FingerprintPredicter
+from ms_uq.utils import create_dataset
+from ms_uq.models.registry import get_model_class
 
 try:
     from torch.serialization import add_safe_globals
@@ -71,7 +70,10 @@ def make_parser() -> argparse.ArgumentParser:
     p.add_argument("--try_harder", type=boolean, default=False)
 
     # Data/loader
+    p.add_argument("--architecture", choices=["mlp", "transformer"], default="mlp")
+    p.add_argument("--candidate_setting", choices=["formula", "mass"], default="formula")
     p.add_argument("--bin_width", type=float, default=0.1)
+    p.add_argument("--max_mz", type=float, default=1005.0)
     p.add_argument("--batch_size", type=int, default=64)
     p.add_argument("--devices", type=ast.literal_eval, default=[0])
     p.add_argument("--precision", type=str, default="bf16-mixed")
@@ -84,6 +86,13 @@ def make_parser() -> argparse.ArgumentParser:
     p.add_argument("--n_layers", type=int, default=3)
     p.add_argument("--dropout", type=float, default=0.2)
     p.add_argument("--lr", type=float, default=0.0001)
+    p.add_argument("--n_peaks", type=int, default=128)
+    p.add_argument("--prec_mz_intensity", type=float, default=1.1)
+    p.add_argument("--transformer_d_model", type=int, default=256)
+    p.add_argument("--transformer_nhead", type=int, default=8)
+    p.add_argument("--transformer_ff_dim", type=int, default=1024)
+    p.add_argument("--transformer_n_layers", type=int, default=4)
+    p.add_argument("--transformer_dropout", type=float, default=0.25)
 
     # Losses
     p.add_argument("--bitwise_loss", type=str, default=None, help='{"bce","fl", "hamm", None}')
@@ -149,6 +158,7 @@ def main():
     
     parser = make_parser()
     args = parser.parse_args()
+    print("architecture =", args.architecture, "candidate_setting =", args.candidate_setting)
 
     # Reproducibility
     seed_everything(args.seed, workers=True)
@@ -162,15 +172,15 @@ def main():
     logger = TensorBoardLogger(save_dir=str(run_dir), name="tb", version="run")
 
     # Dataset + datamodule
-    dataset = RetrievalDataset_PrecompFPandInchi(
-        spec_transform=SpecBinner(max_mz=1005, bin_width=args.bin_width, to_rel_intensities=True),
-        mol_transform=MolFingerprinter(fp_size=4096),
-        pth=args.dataset_path,
-        fp_pth=os.path.join(args.helper_files_dir, "fp_4096.npy"),
-        inchi_pth=os.path.join(args.helper_files_dir, "inchis.npy"),
-        candidates_pth=os.path.join(args.helper_files_dir, "MassSpecGym_retrieval_candidates_formula.json"),
-        candidates_fp_pth=os.path.join(args.helper_files_dir, "MassSpecGym_retrieval_candidates_formula_fps.npz"),
-        candidates_inchi_pth=os.path.join(args.helper_files_dir, "MassSpecGym_retrieval_candidates_formula_inchi.npz"),
+    dataset = create_dataset(
+        args.dataset_path,
+        args.helper_files_dir,
+        bin_width=args.bin_width,
+        max_mz=args.max_mz,
+        architecture=args.architecture,
+        candidate_setting=args.candidate_setting,
+        n_peaks=args.n_peaks,
+        prec_mz_intensity=args.prec_mz_intensity,
     )
 
     data_module = MassSpecDataModule(
@@ -211,8 +221,9 @@ def main():
         None: {},
     }
 
-    model = FingerprintPredicter(
-        n_in=int(1005 / args.bin_width),
+    model_cls = get_model_class(args.architecture)
+    model_kwargs = dict(
+        n_in=int(args.max_mz / args.bin_width),
         layer_dims=[args.layer_dim] * args.n_layers,
         n_bits=4096,
         layer_or_batchnorm="layer",
@@ -232,6 +243,17 @@ def main():
         # mc_dropout_eval flag is part of ckpt hyperparams for later inference if you wish
         mc_dropout_eval=args.mc_dropout_eval,
     )
+    if args.architecture == "transformer":
+        model_kwargs.update(
+            n_in=args.transformer_d_model,
+            layer_dims=[args.transformer_d_model],
+            transformer_d_model=args.transformer_d_model,
+            transformer_nhead=args.transformer_nhead,
+            transformer_ff_dim=args.transformer_ff_dim,
+            transformer_n_layers=args.transformer_n_layers,
+            transformer_dropout=args.transformer_dropout,
+        )
+    model = model_cls(**model_kwargs)
 
     # Checkpoint layout under run_dir/ckpts/<metric>/...  ### NEW
     ckpt_root = run_dir / "ckpts"

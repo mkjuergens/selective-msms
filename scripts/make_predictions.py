@@ -21,10 +21,9 @@ from ms_uq.inference import (
     head_probs_fn,
     save_ranker_from_model,
 )
-from ms_uq.inference.predictor import save_prestacked_predictions
 from ms_uq.inference.retrieve import scores_from_loader
-from ms_uq.models.fingerprint_mlp import FingerprintPredicter
-from ms_uq.models.laplace_bce import DiagLaplaceBCEHead, PriorTuningConfig
+from ms_uq.models.registry import get_model_class
+from ms_uq.models.laplace_bce import LaplaceConfig, generate_laplace_predictions
 
 try:
     from torch.serialization import add_safe_globals
@@ -51,6 +50,7 @@ def save_fp_probs(
     out_fp_path: Path,
     overwrite: bool,
     save_ranker: bool = True,
+    model_cls=None,
 ) -> Optional[Path]:
     """
     Save fingerprint probabilities and optionally ranker weights.
@@ -86,6 +86,8 @@ def save_fp_probs(
         Path to saved ranker, or None if no ranker
     """
     ranker_path = None
+    if model_cls is None:
+        model_cls = get_model_class("mlp")
     
     if out_fp_path.exists() and not overwrite:
         print(f"[predict] using cached {out_fp_path}")
@@ -98,10 +100,10 @@ def save_fp_probs(
     if mode == "mcdo":
         if not ckpt:
             sys.exit("ERROR: --ckpt required for --mode mcdo")
-        sampler = MCDropoutSampler(Path(ckpt), FingerprintPredicter, passes=passes, device=device)
+        sampler = MCDropoutSampler(Path(ckpt), model_cls, passes=passes, device=device)
         # For mcdo, load model once to check for ranker
         if save_ranker:
-            model = FingerprintPredicter.load_from_checkpoint(ckpt, map_location=device)
+            model = model_cls.load_from_checkpoint(ckpt, map_location=device)
             ranker_out = out_fp_path.parent / "ranker.pt"
             if save_ranker_from_model(model, ranker_out):
                 ranker_path = ranker_out
@@ -118,10 +120,10 @@ def save_fp_probs(
         if not ckpt_list:
             sys.exit("ERROR: no ensemble checkpoints found.")
         print(f"[ensemble] {len(ckpt_list)} members discovered.")
-        sampler = EnsembleSampler(ckpt_list, FingerprintPredicter, mc_dropout_eval=False, device=device)
+        sampler = EnsembleSampler(ckpt_list, model_cls, mc_dropout_eval=False, device=device)
         # For ensemble, use first member's ranker (should be same architecture)
         if save_ranker and ckpt_list:
-            model = FingerprintPredicter.load_from_checkpoint(ckpt_list[0], map_location=device)
+            model = model_cls.load_from_checkpoint(ckpt_list[0], map_location=device)
             ranker_out = out_fp_path.parent / "ranker.pt"
             if save_ranker_from_model(model, ranker_out):
                 ranker_path = ranker_out
@@ -131,9 +133,9 @@ def save_fp_probs(
     else:  # single
         if not ckpt:
             sys.exit("ERROR: --ckpt required for --mode single")
-        sampler = EnsembleSampler([Path(ckpt)], FingerprintPredicter, mc_dropout_eval=False, device=device)
+        sampler = EnsembleSampler([Path(ckpt)], model_cls, mc_dropout_eval=False, device=device)
         if save_ranker:
-            model = FingerprintPredicter.load_from_checkpoint(ckpt, map_location=device)
+            model = model_cls.load_from_checkpoint(ckpt, map_location=device)
             ranker_out = out_fp_path.parent / "ranker.pt"
             if save_ranker_from_model(model, ranker_out):
                 ranker_path = ranker_out
@@ -157,62 +159,39 @@ def save_fp_probs_laplace_bce(
     max_train_batches: int = 200, out_chunk: int = 512,
     prior_opt: str = "gridsearch",
     overwrite: bool = False,
+    model_cls=None,
 ) -> None:
-    """Save fingerprint probabilities using Laplace-BCE."""
+    """Save fingerprint probabilities using the current Laplace-BCE helper."""
     if out_fp_path.exists() and not overwrite:
         print(f"[laplace_bce] using cached {out_fp_path}")
         return
 
-    base = FingerprintPredicter.load_from_checkpoint(ckpt_path, strict=False)
-    base.eval().to(device)
+    if model_cls is None:
+        model_cls = get_model_class("mlp")
 
-    la = DiagLaplaceBCEHead(base, device=device, tau_w=tau_w, tau_b=tau_b)
-
-    # Curvature accumulation (cheap last-layer Laplace)
-    la.fit(train_dl, max_batches=max_train_batches, scale_to_dataset=True)
-
-    # Optional prior tuning (recommended). Reuse --la_prior_opt.
-    if val_dl is not None and prior_opt in {"gridsearch", "CV"}:
-        cfg = PriorTuningConfig(
-            # use a reasonably wide log grid; users can still pin tau via args
-            tau_w_grid=(1e-4, 1e-3, 1e-2, 1e-1, 1.0, 10.0, 100.0, 1e3),
-            tau_b_grid=(1e-4, 1e-3, 1e-2, 1e-1, 1.0, 10.0, 100.0, 1e3),
-            max_batches=50,
-            bit_subsample=512,
-            seed=0,
-        )
-        best_tau_w, best_tau_b = la.tune_prior(val_dl, cfg)
-        print(f"[laplace_bce] tuned prior: tau_w={best_tau_w:g}, tau_b={best_tau_b:g}")
-
-    # Predict efficiently: per batch we produce (B,S,K) without rerunning backbone S times.
-    def _predict_batch(batch: dict) -> torch.Tensor:
-        return la.predict_batch(
-            batch,
-            n_samples=n_samples,
-            out_chunk=out_chunk,
-            dtype_out=torch.float16,
-            method="logit_mc",
-        )
-
-    save_prestacked_predictions(
-        test_dl,
-        out_fp_path,
-        _predict_batch,
-        dtype_disk=torch.float16,
-        overwrite=overwrite,
-        chunk_size_batches=50,
-        meta_extra={
-            "method": "laplace_bce_logit_mc",
-            "tau_w": float(la.tau_w),
-            "tau_b": float(la.tau_b),
-            "max_train_batches": int(max_train_batches),
-        },
+    tune_method = "marglik" if prior_opt == "marglik" else "val_bce"
+    cfg = LaplaceConfig(
+        tau_w=tau_w,
+        tau_b=tau_b,
+        n_samples=n_samples,
+        tune_prior=True,
+        tune_method=tune_method,
+        max_batches=max_train_batches,
+        out_chunk=out_chunk,
     )
-    print(f"[laplace_bce] wrote {out_fp_path}")
 
-    del base, la
-    _cleanup()
-
+    generate_laplace_predictions(
+        out_dir=out_fp_path.parent,
+        ckpt=ckpt_path,
+        test_loader=test_dl,
+        train_loader=train_dl,
+        val_loader=val_dl,
+        device=device,
+        overwrite=overwrite,
+        cfg=cfg,
+        save_ranker_fn=save_ranker_from_model,
+        model_cls=model_cls,
+    )
 
 def save_scores(
     fp_path: Path,
@@ -346,12 +325,17 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--dataset_tsv", required=True)
     ap.add_argument("--helper_dir", required=True)
     ap.add_argument("--out_dir", required=True)
+    ap.add_argument("--architecture", choices=["mlp", "transformer"], default="mlp")
+    ap.add_argument("--candidate_setting", choices=["formula", "mass"], default="formula")
 
     # Runtime
     ap.add_argument("--device", default="cuda:0")
     ap.add_argument("--batch_size", type=int, default=256)
     ap.add_argument("--num_workers", type=int, default=2)
     ap.add_argument("--bin_width", type=float, default=0.1)
+    ap.add_argument("--max_mz", type=float, default=1005.0)
+    ap.add_argument("--n_peaks", type=int, default=128)
+    ap.add_argument("--prec_mz_intensity", type=float, default=1.1)
     ap.add_argument("--pin_memory", action="store_true")
 
     # Scoring
@@ -384,28 +368,41 @@ def main():
 
     # ... existing loader and fp_probs code ...
 
+    model_cls = get_model_class(args.architecture)
+    loader_kwargs = dict(
+        architecture=args.architecture,
+        candidate_setting=args.candidate_setting,
+        max_mz=args.max_mz,
+        n_peaks=args.n_peaks,
+        prec_mz_intensity=args.prec_mz_intensity,
+    )
+
     # Create loaders and compute fingerprint probabilities
     if args.mode == "laplace_bce":
         train_dl, val_dl, test_dl = make_train_val_test_loaders(
             args.dataset_tsv, args.helper_dir, args.bin_width,
-            args.batch_size, args.num_workers, args.pin_memory
+            args.batch_size, args.num_workers, args.pin_memory,
+            **loader_kwargs
         )
         save_fp_probs_laplace_bce(
             args.ckpt, args.device, train_dl, val_dl, test_dl, fp_path,
             n_samples=args.laplace_samples, tau_w=args.la_tau_w,
             tau_b=args.la_tau_b, max_train_batches=args.la_max_train_batches,
             out_chunk=args.la_out_chunk, prior_opt=args.la_prior_opt,
-            overwrite=args.overwrite
+            overwrite=args.overwrite,
+            model_cls=model_cls
         )
         dl = test_dl
     else:
         dl = make_test_loader(
             args.dataset_tsv, args.helper_dir, args.bin_width,
-            args.batch_size, args.num_workers, args.pin_memory
+            args.batch_size, args.num_workers, args.pin_memory,
+            **loader_kwargs
         )
         save_fp_probs(
             args.mode, args.ckpt, args.ckpts, args.ens_dir, args.ens_metric,
-            args.passes, args.device, dl, fp_path, args.overwrite
+            args.passes, args.device, dl, fp_path, args.overwrite,
+            model_cls=model_cls
         )
 
     # Verify fp_probs

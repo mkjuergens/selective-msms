@@ -27,12 +27,14 @@ dependencies = [
     "matplotlib",
     "tqdm",
     "pyyaml",
+    "setuptools<81",
+    "tensorboard<2.18",
     "massspecgym",
+    "depthcharge-ms",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "tensorboard",
     "jupyter",
     "pytest",
 ]

@@ -92,10 +92,13 @@ class FingerprintPredicter(RetrievalMassSpecGymModel):
                 if isinstance(m, nn.Dropout):
                     m.train()  # activate masks
 
+    def encode_spectrum(self, x):
+        return self.mlp(x)
+
     def forward(self, x):
         # check if mc dropout should be enabled
         self._enable_mc_dropout()
-        return self.mlp(x)
+        return self.encode_spectrum(x)
 
     def step(self, batch, stage):
         raise NotImplementedError

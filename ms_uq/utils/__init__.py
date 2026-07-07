@@ -7,6 +7,9 @@ from ms_uq.utils.helper_functions import (
     create_dataset,
     make_test_loader,
     make_train_val_test_loaders,
+    make_spec_transform,
+    resolve_candidate_paths,
+    normalize_candidate_setting,
     
     # Prediction loading
     load_predictions,
@@ -29,6 +32,9 @@ __all__ = [
     "create_dataset",
     "make_test_loader",
     "make_train_val_test_loaders",
+    "make_spec_transform",
+    "resolve_candidate_paths",
+    "normalize_candidate_setting",
     "load_predictions",
     "load_ground_truth",
     "load_candidate_stats",

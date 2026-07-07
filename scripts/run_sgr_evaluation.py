@@ -25,6 +25,11 @@ class SGRConfig:
     gt_path: str = ""
     dataset_tsv: str = ""
     helper_dir: str = ""
+    architecture: str = "mlp"
+    candidate_setting: str = "formula"
+    max_mz: float = 1005.0
+    n_peaks: int = 128
+    prec_mz_intensity: float = 1.1
     delta: float = 0.005
 
     # Ranker support (for ranking-loss models)
@@ -51,6 +56,16 @@ class SGRConfig:
     bin_width: float = 0.1
     test_subset_size: Optional[int] = None
     overwrite: bool = False
+
+
+def _loader_kwargs(config: SGRConfig) -> Dict:
+    return {
+        "architecture": config.architecture,
+        "candidate_setting": config.candidate_setting,
+        "max_mz": config.max_mz,
+        "n_peaks": config.n_peaks,
+        "prec_mz_intensity": config.prec_mz_intensity,
+    }
 
 
 def _find_ranker(pred_dir: Path, config: SGRConfig) -> Optional[torch.nn.Module]:
@@ -105,7 +120,8 @@ def load_data(pred_dir: Path, out_dir: Path, config: SGRConfig, loader=None):
         if loader is None:
             loader = make_test_loader(
                 config.dataset_tsv, config.helper_dir, config.bin_width,
-                config.batch_size, config.num_workers, subset_size=config.test_subset_size
+                config.batch_size, config.num_workers, subset_size=config.test_subset_size,
+                **_loader_kwargs(config),
             )
         data = scores_from_loader(Pbits, loader, metric=config.metric, aggregation=config.aggregation,
                                   temperature=config.temperature, return_labels=True,
@@ -113,7 +129,8 @@ def load_data(pred_dir: Path, out_dir: Path, config: SGRConfig, loader=None):
         out_dir.mkdir(parents=True, exist_ok=True)
         torch.save(data, scores_file)
 
-    return Pbits, data["scores_flat"], data.get("scores_stack_flat"), data["ptr"]
+    labels_flat = data.get("labels_flat")
+    return Pbits, data["scores_flat"], data.get("scores_stack_flat"), data["ptr"], labels_flat
 
 
 def compute_losses(Pbits, scores_flat, ptr, labels_flat, y_bits, config: SGRConfig) -> Dict[str, np.ndarray]:
@@ -222,8 +239,17 @@ def run_sgr_evaluation(pred_dir: Path, out_dir: Path, config: SGRConfig,
     print(f"\n{'='*60}\nSGR Evaluation: {label or pred_dir.name}\n{'='*60}")
 
     # Load data
-    Pbits, scores_flat, scores_stack, ptr = load_data(Path(pred_dir), out_dir, config, loader)
-    y_bits, labels_flat = load_ground_truth(gt_path or Path(config.gt_path))
+    Pbits, scores_flat, scores_stack, ptr, labels_from_scores = load_data(Path(pred_dir), out_dir, config, loader)
+    y_bits, labels_fallback = load_ground_truth(gt_path or Path(config.gt_path))
+    labels_flat = labels_from_scores if labels_from_scores is not None else labels_fallback
+    if labels_flat is None:
+        raise ValueError("No labels_flat available; recompute score files with return_labels=True.")
+    labels_flat = labels_flat.float()
+    if labels_flat.numel() != scores_flat.numel():
+        raise ValueError(
+            f"labels_flat length ({labels_flat.numel()}) does not match scores_flat length "
+            f"({scores_flat.numel()}); recompute scores for candidate_setting='{config.candidate_setting}'."
+        )
 
     # Compute
     all_losses = compute_losses(Pbits, scores_flat, ptr, labels_flat, y_bits, config)
@@ -246,19 +272,27 @@ def run_sgr_evaluation(pred_dir: Path, out_dir: Path, config: SGRConfig,
             print(f"\n  {name}:")
             for loss, data in results.items():
                 top = sorted(data["aurcs"].items(), key=lambda x: x[1])[:3]
-                print(f"    {loss} (base={data['base_error']:.1%}): best={top[0][0]} AURC={top[0][1]:.4f}")
+                if top:
+                    print(f"    {loss} (base={data['base_error']:.1%}): best={top[0][0]} AURC={top[0][1]:.4f}")
+                else:
+                    print(f"    {loss} (base={data['base_error']:.1%}): no valid AURC entries")
 
     # Plot
-    if retrieval_results:
+    has_retrieval_plots = any(data["aurcs"] for data in retrieval_results.values())
+    has_fingerprint_plots = any(data["aurcs"] for data in fingerprint_results.values())
+
+    if retrieval_results and has_retrieval_plots:
         plot_sgr_coverage_combined(retrieval_results, "", out_dir / "sgr_retrieval_coverage.pdf", sharey=True)
         plot_sgr_coverage_combined(retrieval_results, "", out_dir / "sgr_retrieval_coverage.png", sharey=True)
         plot_sgr_risk_calibration(retrieval_results, "", out_dir / "sgr_retrieval_calibration.png", sharey=True)
         plot_sgr_risk_calibration(retrieval_results, "", out_dir / "sgr_retrieval_calibration.pdf", sharey=True)
 
-    if fingerprint_results:
+    if fingerprint_results and has_fingerprint_plots:
         plot_sgr_coverage_combined(fingerprint_results, "", out_dir / "sgr_fingerprint_coverage.pdf", sharey=False)
         plot_sgr_coverage_combined(fingerprint_results, "", out_dir / "sgr_fingerprint_coverage.png", sharey=False)
         plot_sgr_risk_calibration(fingerprint_results, "", out_dir / "sgr_fingerprint_calibration.png", sharey=False)
+    elif fingerprint_results:
+        print("  Skipping fingerprint SGR plots: no valid fingerprint measures.")
 
     # Save CSV
     rows = []
@@ -284,18 +318,17 @@ def run_from_config(config_path: Path, group: str):
     group_cfg = cfg["model_groups"][group]
     base_out = Path(common["base_out_dir"]) / group_cfg.get("out_subdir", group)
 
-    loader = make_test_loader(
-        common["dataset_tsv"], common["helper_dir"],
-        common.get("bin_width", 0.1), common.get("batch_size", 256), common.get("num_workers", 2),
-        subset_size=common.get("test_subset_size"),
-    )
-
     for model_name, model_cfg in group_cfg["models"].items():
         config = SGRConfig(
             pred_dir=model_cfg["pred_dir"],
             gt_path=common.get("gt_path", ""),
             dataset_tsv=common["dataset_tsv"],
             helper_dir=common["helper_dir"],
+            architecture=model_cfg.get("architecture", common.get("architecture", "mlp")),
+            candidate_setting=model_cfg.get("candidate_setting", common.get("candidate_setting", "formula")),
+            max_mz=model_cfg.get("max_mz", common.get("max_mz", 1005.0)),
+            n_peaks=model_cfg.get("n_peaks", common.get("n_peaks", 128)),
+            prec_mz_intensity=model_cfg.get("prec_mz_intensity", common.get("prec_mz_intensity", 1.1)),
             delta=sgr_cfg.get("delta", 0.005),
             ranker_path=model_cfg.get("ranker_path", ""),
             retrieval_losses=sgr_cfg.get("retrieval_losses", ["hit@1", "hit@5", "hit@20"]),
@@ -317,7 +350,7 @@ def run_from_config(config_path: Path, group: str):
 
         run_sgr_evaluation(Path(model_cfg["pred_dir"]), base_out / model_name / "sgr", config,
                           gt_path=Path(common["gt_path"]) if common.get("gt_path") else None,
-                          loader=loader, label=model_cfg.get("label", model_name))
+                          loader=None, label=model_cfg.get("label", model_name))
 
 
 def main():

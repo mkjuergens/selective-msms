@@ -153,7 +153,10 @@ def main():
     p.add_argument("--df_test_path", type=str, default=None)
     p.add_argument("--try_harder", type=boolean, default=False)
 
+    p.add_argument("--architecture", choices=["mlp", "transformer"], default="mlp")
+    p.add_argument("--candidate_setting", choices=["formula", "mass"], default="formula")
     p.add_argument("--bin_width", type=float, default=0.1)
+    p.add_argument("--max_mz", type=float, default=1005.0)
     p.add_argument("--batch_size", type=int, default=128)
     p.add_argument("--devices", type=str, default="[0]")     # <— ADD type=str
     p.add_argument("--precision", type=str, default="bf16-mixed")
@@ -164,6 +167,13 @@ def main():
     p.add_argument("--n_layers", type=int, default=3)
     p.add_argument("--dropout", type=float, default=0.3)
     p.add_argument("--lr", type=float, default=1e-4)
+    p.add_argument("--n_peaks", type=int, default=128)
+    p.add_argument("--prec_mz_intensity", type=float, default=1.1)
+    p.add_argument("--transformer_d_model", type=int, default=256)
+    p.add_argument("--transformer_nhead", type=int, default=8)
+    p.add_argument("--transformer_ff_dim", type=int, default=1024)
+    p.add_argument("--transformer_n_layers", type=int, default=4)
+    p.add_argument("--transformer_dropout", type=float, default=0.25)
 
     p.add_argument("--bitwise_loss", type=str, default=None)
     p.add_argument("--fpwise_loss", type=str, default=None)
@@ -230,7 +240,10 @@ def main():
         "save_top_k": args.save_top_k,                        # ADD
         "save_last": args.save_last,  
         "args_forwarded": {
+            "architecture": args.architecture,
+            "candidate_setting": args.candidate_setting,
             "bin_width": args.bin_width,
+            "max_mz": args.max_mz,
             "batch_size": args.batch_size,
             "n_workers": args.n_workers,
             "precision": args.precision,
@@ -241,6 +254,12 @@ def main():
             "limit_test_batches": args.limit_test_batches,
             "num_sanity_val_steps": args.num_sanity_val_steps,
             "layer_dim": args.layer_dim, "n_layers": args.n_layers, "dropout": args.dropout, "lr": args.lr,
+            "n_peaks": args.n_peaks, "prec_mz_intensity": args.prec_mz_intensity,
+            "transformer_d_model": args.transformer_d_model,
+            "transformer_nhead": args.transformer_nhead,
+            "transformer_ff_dim": args.transformer_ff_dim,
+            "transformer_n_layers": args.transformer_n_layers,
+            "transformer_dropout": args.transformer_dropout,
             "bitwise_loss": args.bitwise_loss, "fpwise_loss": args.fpwise_loss, "rankwise_loss": args.rankwise_loss,
             "bitwise_lambd": args.bitwise_lambd, "fpwise_lambd": args.fpwise_lambd, "rankwise_lambd": args.rankwise_lambd,
             "bitwise_weighted": args.bitwise_weighted, "bitwise_fl_gamma": args.bitwise_fl_gamma,
@@ -276,7 +295,10 @@ def main():
                 f"--skip_test={args.skip_test}",
                 f"--df_test_path={args.df_test_path}",
                 f"--try_harder={args.try_harder}",
+                f"--architecture={args.architecture}",
+                f"--candidate_setting={args.candidate_setting}",
                 f"--bin_width={args.bin_width}",
+                f"--max_mz={args.max_mz}",
                 f"--batch_size={args.batch_size}",
                 f"--devices={[0]}",
                 f"--precision={args.precision}",
@@ -285,6 +307,13 @@ def main():
                 f"--n_layers={args.n_layers}",
                 f"--dropout={args.dropout}",
                 f"--lr={args.lr}",
+                f"--n_peaks={args.n_peaks}",
+                f"--prec_mz_intensity={args.prec_mz_intensity}",
+                f"--transformer_d_model={args.transformer_d_model}",
+                f"--transformer_nhead={args.transformer_nhead}",
+                f"--transformer_ff_dim={args.transformer_ff_dim}",
+                f"--transformer_n_layers={args.transformer_n_layers}",
+                f"--transformer_dropout={args.transformer_dropout}",
                 f"--bitwise_loss={args.bitwise_loss}",
                 f"--fpwise_loss={args.fpwise_loss}",
                 f"--rankwise_loss={args.rankwise_loss}",
@@ -354,7 +383,10 @@ def main():
         f"--skip_test={args.skip_test}",
         f"--df_test_path={args.df_test_path}",
         f"--try_harder={args.try_harder}",
+        f"--architecture={args.architecture}",
+        f"--candidate_setting={args.candidate_setting}",
         f"--bin_width={args.bin_width}",
+        f"--max_mz={args.max_mz}",
         f"--batch_size={args.batch_size}",
         f"--devices={[0]}",                              # <— matches the masked view
         f"--precision={args.precision}",
@@ -362,6 +394,13 @@ def main():
         f"--n_layers={args.n_layers}",
         f"--dropout={args.dropout}",
         f"--lr={args.lr}",
+        f"--n_peaks={args.n_peaks}",
+        f"--prec_mz_intensity={args.prec_mz_intensity}",
+        f"--transformer_d_model={args.transformer_d_model}",
+        f"--transformer_nhead={args.transformer_nhead}",
+        f"--transformer_ff_dim={args.transformer_ff_dim}",
+        f"--transformer_n_layers={args.transformer_n_layers}",
+        f"--transformer_dropout={args.transformer_dropout}",
         f"--bitwise_loss={args.bitwise_loss}",
         f"--fpwise_loss={args.fpwise_loss}",
         f"--rankwise_loss={args.rankwise_loss}",

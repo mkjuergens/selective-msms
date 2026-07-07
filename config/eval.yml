@@ -3,6 +3,11 @@ common:
   dataset_tsv: data/MassSpecGym.tsv
   helper_dir: data/
   gt_path: data/ground_truth_bits_labels_test.pt
+  architecture: mlp
+  candidate_setting: formula
+  max_mz: 1005.0
+  n_peaks: 128
+  prec_mz_intensity: 1.1
   base_out_dir: outputs/eval
 
   # ── Retrieval settings ──

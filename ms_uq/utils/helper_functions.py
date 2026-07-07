@@ -13,8 +13,98 @@ from torch import Tensor
 from torch.utils.data import DataLoader, Subset
 
 from ms_uq.data import RetrievalDataset_PrecompFPandInchi
-from massspecgym.data.transforms import SpecBinner, MolFingerprinter
+from massspecgym.data.transforms import SpecBinner, MolFingerprinter, SpecTokenizer
 from massspecgym.data.data_module import MassSpecDataModule
+from ms_uq.models.registry import normalize_architecture
+
+
+CANDIDATE_SETTINGS = ("formula", "mass")
+
+
+def normalize_candidate_setting(candidate_setting: str | None) -> str:
+    setting = (candidate_setting or "formula").lower()
+    if setting not in CANDIDATE_SETTINGS:
+        raise ValueError(
+            f"Unknown candidate_setting '{candidate_setting}'. "
+            f"Expected one of {CANDIDATE_SETTINGS}."
+        )
+    return setting
+
+
+def _first_existing(
+    helper_dir: Path,
+    names: List[str],
+    description: str,
+    candidate_setting: str,
+) -> Path:
+    for name in names:
+        path = helper_dir / name
+        if path.exists():
+            return path
+    tried = ", ".join(str(helper_dir / name) for name in names)
+    raise FileNotFoundError(
+        f"Missing {description} for candidate_setting='{candidate_setting}'. "
+        f"Tried: {tried}"
+    )
+
+
+def resolve_candidate_paths(
+    helper_dir: Union[str, Path],
+    candidate_setting: str = "formula",
+) -> Tuple[Path, Path, Path]:
+    """Resolve candidate JSON, fingerprint, and InChI helper files."""
+    helper_dir = Path(helper_dir)
+    setting = normalize_candidate_setting(candidate_setting)
+
+    candidates_pth = _first_existing(
+        helper_dir,
+        [f"MassSpecGym_retrieval_candidates_{setting}.json"],
+        "candidate JSON",
+        setting,
+    )
+
+    fp_names = [
+        f"MassSpecGym_retrieval_candidates_{setting}_fps.npz",
+        f"morgan_2_4096_{setting}cands.npz",
+    ]
+    if setting == "formula":
+        fp_names.append("MassSpecGym_retrieval_candidates_formula_fps_old.npz")
+
+    candidates_fp_pth = _first_existing(
+        helper_dir,
+        fp_names,
+        "candidate fingerprint NPZ",
+        setting,
+    )
+
+    candidates_inchi_pth = _first_existing(
+        helper_dir,
+        [
+            f"MassSpecGym_retrieval_candidates_{setting}_inchi.npz",
+            f"Inchis_{setting}cands.npz",
+        ],
+        "candidate InChI NPZ",
+        setting,
+    )
+    return candidates_pth, candidates_fp_pth, candidates_inchi_pth
+
+
+def make_spec_transform(
+    architecture: str = "mlp",
+    bin_width: float = 0.1,
+    max_mz: float = 1005.0,
+    n_peaks: int = 128,
+    prec_mz_intensity: Optional[float] = 1.1,
+):
+    """Create the spectrum transform required by the selected architecture."""
+    arch = normalize_architecture(architecture)
+    if arch == "mlp":
+        return SpecBinner(max_mz=max_mz, bin_width=bin_width, to_rel_intensities=True)
+    return SpecTokenizer(
+        n_peaks=n_peaks,
+        prec_mz_intensity=prec_mz_intensity,
+        matchms_kwargs={"mz_to": max_mz},
+    )
 
 
 def create_dataset(
@@ -23,25 +113,33 @@ def create_dataset(
     bin_width: float = 0.1,
     fp_size: int = 4096,
     max_mz: float = 1005.0,
+    architecture: str = "mlp",
+    candidate_setting: str = "formula",
+    n_peaks: int = 128,
+    prec_mz_intensity: Optional[float] = 1.1,
 ) -> RetrievalDataset_PrecompFPandInchi:
-    """Create retrieval dataset with precomputed fingerprints."""
+    """Create retrieval dataset with precomputed fingerprints and candidates."""
     helper_dir = Path(helper_dir)
-    
-    fps_path = helper_dir / "MassSpecGym_retrieval_candidates_formula_fps.npz"
-    if not fps_path.exists():
-        fps_path = helper_dir / "MassSpecGym_retrieval_candidates_formula_fps_old.npz"
+    candidates_pth, candidates_fp_pth, candidates_inchi_pth = resolve_candidate_paths(
+        helper_dir, candidate_setting=candidate_setting
+    )
 
     return RetrievalDataset_PrecompFPandInchi(
-        spec_transform=SpecBinner(max_mz=max_mz, bin_width=bin_width, to_rel_intensities=True),
+        spec_transform=make_spec_transform(
+            architecture=architecture,
+            bin_width=bin_width,
+            max_mz=max_mz,
+            n_peaks=n_peaks,
+            prec_mz_intensity=prec_mz_intensity,
+        ),
         mol_transform=MolFingerprinter(fp_size=fp_size),
         pth=str(dataset_tsv),
         fp_pth=helper_dir / "fp_4096.npy",
         inchi_pth=helper_dir / "inchis.npy",
-        candidates_pth=helper_dir / "MassSpecGym_retrieval_candidates_formula.json",
-        candidates_fp_pth=fps_path,
-        candidates_inchi_pth=helper_dir / "MassSpecGym_retrieval_candidates_formula_inchi.npz",
+        candidates_pth=candidates_pth,
+        candidates_fp_pth=candidates_fp_pth,
+        candidates_inchi_pth=candidates_inchi_pth,
     )
-
 
 def _worker_init_fn(worker_id: int):
     """
@@ -67,6 +165,11 @@ def make_test_loader(
     num_workers: int = 2,
     pin_memory: bool = False,
     subset_size: Optional[int] = None,
+    architecture: str = "mlp",
+    candidate_setting: str = "formula",
+    max_mz: float = 1005.0,
+    n_peaks: int = 128,
+    prec_mz_intensity: Optional[float] = 1.1,
 ) -> DataLoader:
     """
     Create test dataloader with memory-efficient and DETERMINISTIC settings.
@@ -75,7 +178,14 @@ def make_test_loader(
     every time it is iterated, which is essential for alignment between
     prediction generation and scoring.
     """
-    ds = create_dataset(dataset_tsv, helper_dir, bin_width)
+    ds = create_dataset(
+        dataset_tsv, helper_dir, bin_width,
+        architecture=architecture,
+        candidate_setting=candidate_setting,
+        max_mz=max_mz,
+        n_peaks=n_peaks,
+        prec_mz_intensity=prec_mz_intensity,
+    )
     dm = MassSpecDataModule(dataset=ds, batch_size=batch_size, num_workers=num_workers)
     dm.prepare_data()
     dm.setup(stage="test")
@@ -111,9 +221,21 @@ def make_train_val_test_loaders(
     batch_size: int = 256,
     num_workers: int = 2,
     pin_memory: bool = False,
+    architecture: str = "mlp",
+    candidate_setting: str = "formula",
+    max_mz: float = 1005.0,
+    n_peaks: int = 128,
+    prec_mz_intensity: Optional[float] = 1.1,
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     """Create train/val/test loaders for methods requiring fitting."""
-    ds = create_dataset(dataset_tsv, helper_dir, bin_width)
+    ds = create_dataset(
+        dataset_tsv, helper_dir, bin_width,
+        architecture=architecture,
+        candidate_setting=candidate_setting,
+        max_mz=max_mz,
+        n_peaks=n_peaks,
+        prec_mz_intensity=prec_mz_intensity,
+    )
     dm = MassSpecDataModule(dataset=ds, batch_size=batch_size, num_workers=num_workers)
     dm.prepare_data()
     
@@ -225,10 +347,10 @@ def load_predictions(
     return Pbits, scores_agg.float(), scores_stack, ptr.long()
 
 
-def load_ground_truth(gt_path: Union[str, Path]) -> Tuple[Tensor, Tensor]:
-    """Load ground-truth fingerprints and labels."""
+def load_ground_truth(gt_path: Union[str, Path]) -> Tuple[Tensor, Optional[Tensor]]:
+    """Load ground-truth fingerprints and optional legacy retrieval labels."""
     GT = torch.load(gt_path, map_location="cpu")
-    return GT["y_bits"], GT["labels_flat"]
+    return GT["y_bits"], GT.get("labels_flat")
 
 
 def load_candidate_stats(stats_path: Union[str, Path]) -> Tensor:

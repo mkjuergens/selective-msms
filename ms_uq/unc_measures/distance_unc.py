@@ -271,6 +271,7 @@ def extract_embeddings_from_loader(
     device: str = "cuda",
     show_progress: bool = True,
     embedding_type: str = "encoder",
+    model_cls=None,
 ) -> Tensor:
     """
     Extract embeddings by streaming through a DataLoader.
@@ -295,8 +296,10 @@ def extract_embeddings_from_loader(
         - encoder: D = encoder output dimension (e.g., 512)
         - fingerprint: D = fingerprint dimension (e.g., 4096)
     """
-    from ms_uq.models.fingerprint_mlp import FingerprintPredicter
     import torch.nn.functional as F
+    if model_cls is None:
+        from ms_uq.models.fingerprint_mlp import FingerprintPredicter
+        model_cls = FingerprintPredicter
     
     # Handle PyTorch 2.6+ weights_only default
     try:
@@ -306,7 +309,7 @@ def extract_embeddings_from_loader(
     except Exception:
         pass
     
-    model = FingerprintPredicter.load_from_checkpoint(ckpt_path, map_location=device)
+    model = model_cls.load_from_checkpoint(ckpt_path, map_location=device)
     model.eval()
     model.to(device)
     
@@ -320,10 +323,10 @@ def extract_embeddings_from_loader(
             
             if embedding_type == "encoder":
                 # Encoder output (penultimate layer)
-                emb = model.mlp(x)
+                emb = model.encode_spectrum(x) if hasattr(model, "encode_spectrum") else model.mlp(x)
             else:
                 # Fingerprint predictions (output layer)
-                hidden = model.mlp(x)
+                hidden = model.encode_spectrum(x) if hasattr(model, "encode_spectrum") else model.mlp(x)
                 logits = model.loss.fp_pred_head(hidden)
                 emb = F.sigmoid(logits)  # Convert to probabilities
             

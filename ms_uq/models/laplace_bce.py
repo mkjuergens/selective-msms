@@ -36,7 +36,7 @@ def _logistic_normal_mean(mu: torch.Tensor, var: torch.Tensor) -> torch.Tensor:
 
 
 class _FeatureExtractor(nn.Module):
-    """Thin wrapper: extracts penultimate features h = model.mlp(x)."""
+    """Thin wrapper: extracts penultimate spectrum features."""
 
     def __init__(self, model: nn.Module):
         super().__init__()
@@ -45,6 +45,8 @@ class _FeatureExtractor(nn.Module):
 
     @torch.inference_mode()
     def features(self, x: torch.Tensor) -> torch.Tensor:
+        if hasattr(self.model, "encode_spectrum"):
+            return self.model.encode_spectrum(x)
         return self.model.mlp(x)
 
 

@@ -14,7 +14,7 @@ from torch.utils.data import DataLoader
 from ms_uq.utils import make_test_loader, load_predictions, load_ground_truth, discover_ensemble_ckpts, make_train_val_test_loaders
 from ms_uq.inference.retrieve import scores_from_loader
 from ms_uq.inference import Predictor, MCDropoutSampler, EnsembleSampler, head_probs_fn, load_ranker, save_ranker_from_model
-from ms_uq.models.fingerprint_mlp import FingerprintPredicter
+from ms_uq.models.registry import get_model_class
 from ms_uq.evaluation import (
     hit_at_k_ragged, 
     compute_aurc_table,
@@ -37,6 +37,11 @@ class EvalConfig:
     dataset_tsv: str = ""
     helper_dir: str = ""
     gt_path: str = ""
+    architecture: str = "mlp"
+    candidate_setting: str = "formula"
+    max_mz: float = 1005.0
+    n_peaks: int = 128
+    prec_mz_intensity: float = 1.1
     
     mode: str = "ensemble"
     ckpt: str = ""
@@ -87,13 +92,25 @@ def _cleanup():
         torch.cuda.empty_cache()
 
 
+def _loader_kwargs(config: EvalConfig) -> Dict:
+    return {
+        "architecture": config.architecture,
+        "candidate_setting": config.candidate_setting,
+        "max_mz": config.max_mz,
+        "n_peaks": config.n_peaks,
+        "prec_mz_intensity": config.prec_mz_intensity,
+    }
+
+
 def generate_predictions(out_dir: Path, config: EvalConfig, loader: Optional[DataLoader] = None,
                          train_loader: Optional[DataLoader] = None, 
                          val_loader: Optional[DataLoader] = None) -> Tuple[Path, Optional[Path]]:
     """Generate fingerprint predictions from checkpoints."""
     try:
         from massspecgym.models.base import Stage
-        torch.serialization.add_safe_globals([Stage])
+        add_safe_globals = getattr(torch.serialization, "add_safe_globals", None)
+        if add_safe_globals is not None:
+            add_safe_globals([Stage])
     except ImportError:
         pass
     
@@ -109,10 +126,12 @@ def generate_predictions(out_dir: Path, config: EvalConfig, loader: Optional[Dat
     if loader is None:
         loader = make_test_loader(
             config.dataset_tsv, config.helper_dir, config.bin_width,
-            config.batch_size, config.num_workers, subset_size=config.test_subset_size
+            config.batch_size, config.num_workers, subset_size=config.test_subset_size,
+            **_loader_kwargs(config),
         )
     
     mode = config.mode.lower()
+    model_cls = get_model_class(config.architecture)
     if mode == "ensemble" and config.ckpt and not config.ckpts and not config.ens_dir:
         mode = "mcdo" if config.passes > 1 else "single"
     
@@ -139,15 +158,17 @@ def generate_predictions(out_dir: Path, config: EvalConfig, loader: Optional[Dat
             cfg=lp_cfg,
             make_loaders_fn=lambda: make_train_val_test_loaders(
                 config.dataset_tsv, config.helper_dir, config.bin_width,
-                config.batch_size, config.num_workers
+                config.batch_size, config.num_workers,
+                **_loader_kwargs(config),
             ),
+            model_cls=model_cls,
             save_ranker_fn=save_ranker_from_model,
         )
     
     ckpt_for_ranker = None
     if mode == "mcdo":
         print(f"  Mode: MC Dropout ({config.passes} passes)")
-        sampler = MCDropoutSampler(Path(config.ckpt), FingerprintPredicter, passes=config.passes, device=config.device)
+        sampler = MCDropoutSampler(Path(config.ckpt), model_cls, passes=config.passes, device=config.device)
         ckpt_for_ranker = config.ckpt
     elif mode == "ensemble":
         if config.ckpts:
@@ -157,18 +178,18 @@ def generate_predictions(out_dir: Path, config: EvalConfig, loader: Optional[Dat
         else:
             raise ValueError("Ensemble requires --ckpts or (--ens_dir and --ens_metric)")
         print(f"  Mode: Ensemble ({len(ckpt_list)} members)")
-        sampler = EnsembleSampler(ckpt_list, FingerprintPredicter, mc_dropout_eval=False, device=config.device)
+        sampler = EnsembleSampler(ckpt_list, model_cls, mc_dropout_eval=False, device=config.device)
         ckpt_for_ranker = ckpt_list[0]
     elif mode == "single":
         print(f"  Mode: Single model")
-        sampler = EnsembleSampler([Path(config.ckpt)], FingerprintPredicter, mc_dropout_eval=False, device=config.device)
+        sampler = EnsembleSampler([Path(config.ckpt)], model_cls, mc_dropout_eval=False, device=config.device)
         ckpt_for_ranker = config.ckpt
     else:
         raise ValueError(f"Unknown mode: {mode}")
     
     if ckpt_for_ranker:
         try:
-            model = FingerprintPredicter.load_from_checkpoint(ckpt_for_ranker, map_location=config.device)
+            model = model_cls.load_from_checkpoint(ckpt_for_ranker, map_location=config.device)
             save_ranker_from_model(model, ranker_path)
             del model; _cleanup()
         except Exception:
@@ -210,11 +231,13 @@ def _fit_distance_model_for_eval(pred_dir: Path, config: EvalConfig,
         if train_loader is None:
             train_loader, _, _ = make_train_val_test_loaders(
                 config.dataset_tsv, config.helper_dir, config.bin_width,
-                config.batch_size, config.num_workers
+                config.batch_size, config.num_workers,
+                **_loader_kwargs(config),
             )
         train_embeddings = extract_embeddings_from_loader(
-            ckpt_path, train_loader, device=config.device, 
-            show_progress=True, embedding_type=emb_type
+            ckpt_path, train_loader, device=config.device,
+            show_progress=True, embedding_type=emb_type,
+            model_cls=get_model_class(config.architecture),
         )
         torch.save(train_embeddings, train_emb_path)
     
@@ -261,8 +284,9 @@ def _extract_test_embeddings(pred_dir: Path, config: EvalConfig, test_loader) ->
     
     print(f"  Extracting test {emb_type} embeddings...")
     test_embeddings = extract_embeddings_from_loader(
-        ckpt_path, test_loader, device=config.device, 
-        show_progress=True, embedding_type=emb_type
+        ckpt_path, test_loader, device=config.device,
+        show_progress=True, embedding_type=emb_type,
+        model_cls=get_model_class(config.architecture),
     )
     torch.save(test_embeddings, test_emb_path)
     return test_embeddings
@@ -280,14 +304,23 @@ def compute_retrieval_metrics(scores_flat: torch.Tensor, labels_flat: torch.Tens
 
 
 def evaluate_aggregation(Pbits: torch.Tensor, scores_path: Path, y_bits: Optional[torch.Tensor],
-                          labels_flat: torch.Tensor, config: EvalConfig,
+                          labels_flat: Optional[torch.Tensor], config: EvalConfig,
                           distance_model=None, test_embeddings=None) -> Dict:
     """Evaluate a single aggregation method."""
     data = torch.load(scores_path, map_location="cpu")
     scores_flat, ptr = data["scores_flat"], data["ptr"]
     scores_stack = data.get("scores_stack_flat")
+    labels_for_scores = data.get("labels_flat", labels_flat)
+    if labels_for_scores is None:
+        raise ValueError(f"No labels_flat available for {scores_path}; recompute scores with return_labels=True.")
+    labels_for_scores = labels_for_scores.float()
+    if labels_for_scores.numel() != scores_flat.numel():
+        raise ValueError(
+            f"labels_flat length ({labels_for_scores.numel()}) does not match scores_flat "
+            f"length ({scores_flat.numel()}) for {scores_path}. Recompute scores for the active candidate_setting."
+        )
     
-    hits, retrieval_losses = compute_retrieval_metrics(scores_flat, labels_flat, ptr, config.top_k_hits)
+    hits, retrieval_losses = compute_retrieval_metrics(scores_flat, labels_for_scores, ptr, config.top_k_hits)
     
     fp_losses = {}
     if y_bits is not None:
@@ -454,7 +487,8 @@ def run_evaluation(pred_dir: Path, out_dir: Path, config: EvalConfig,
     if loader is None:
         loader = make_test_loader(
             config.dataset_tsv, config.helper_dir, config.bin_width,
-            config.batch_size, config.num_workers, subset_size=config.test_subset_size
+            config.batch_size, config.num_workers, subset_size=config.test_subset_size,
+            **_loader_kwargs(config),
         )
     
     fp_path = pred_dir / "fp_probs.pt"
@@ -477,7 +511,7 @@ def run_evaluation(pred_dir: Path, out_dir: Path, config: EvalConfig,
     Pbits, _, _, _ = load_predictions(pred_dir, metric=config.metric, aggregation="score", require_scores=False)
     if Pbits is None:
         raise FileNotFoundError(f"No fp_probs.pt in {pred_dir}")
-    y_bits, labels_flat = load_ground_truth(gt_path or Path(config.gt_path))
+    y_bits, labels_flat_fallback = load_ground_truth(gt_path or Path(config.gt_path))
     if y_bits is not None and y_bits.shape[0] != Pbits.shape[0]:
         y_bits = y_bits[:Pbits.shape[0]]
     
@@ -514,7 +548,7 @@ def run_evaluation(pred_dir: Path, out_dir: Path, config: EvalConfig,
     for agg, path in scores_paths.items():
         print(f"  {agg}...")
         agg_results[agg] = evaluate_aggregation(
-            Pbits, path, y_bits, labels_flat, config, 
+            Pbits, path, y_bits, labels_flat_fallback, config,
             distance_model=distance_model, test_embeddings=test_embeddings
         )
     
@@ -523,7 +557,10 @@ def run_evaluation(pred_dir: Path, out_dir: Path, config: EvalConfig,
     if "score" in scores_paths:
         data = torch.load(scores_paths["score"], map_location="cpu")
         if data.get("scores_stack_flat") is not None:
-            member_hits = evaluate_members(data["scores_stack_flat"], labels_flat, data["ptr"], config.top_k_hits)
+            labels_for_members = data.get("labels_flat", labels_flat_fallback)
+            if labels_for_members is None:
+                raise ValueError("No labels_flat available for member evaluation; recompute score files.")
+            member_hits = evaluate_members(data["scores_stack_flat"], labels_for_members.float(), data["ptr"], config.top_k_hits)
     
     print("\n[plot] Generating plots...")
     _generate_plots(agg_results, member_hits, config, out_dir, label)
@@ -665,14 +702,6 @@ def run_from_config(config_path: Path, group: str):
     group_cfg = cfg["model_groups"][group]
     base_out = Path(common["base_out_dir"]) / group_cfg.get("out_subdir", group)
     
-    loader = make_test_loader(
-        common["dataset_tsv"], common["helper_dir"],
-        common.get("bin_width", 0.1),
-        common.get("batch_size", 256),
-        common.get("num_workers", 2),
-        subset_size=common.get("test_subset_size"),
-    )
-    
     for model_name, model_cfg in group_cfg["models"].items():
         if model_cfg is None:
             model_cfg = {}
@@ -682,7 +711,7 @@ def run_from_config(config_path: Path, group: str):
         run_evaluation(
             Path(model_cfg["pred_dir"]), base_out / model_name, model_config,
             gt_path=Path(common["gt_path"]) if common.get("gt_path") else None,
-            loader=loader, label=model_cfg.get("label", model_name),
+            loader=None, label=model_cfg.get("label", model_name),
         )
 
 
@@ -705,6 +734,11 @@ def parse_args():
     ap.add_argument("--batch_size", type=int, default=256)
     ap.add_argument("--num_workers", type=int, default=2)
     ap.add_argument("--bin_width", type=float, default=0.1)
+    ap.add_argument("--architecture", choices=["mlp", "transformer"], default="mlp")
+    ap.add_argument("--candidate_setting", choices=["formula", "mass"], default="formula")
+    ap.add_argument("--max_mz", type=float, default=1005.0)
+    ap.add_argument("--n_peaks", type=int, default=128)
+    ap.add_argument("--prec_mz_intensity", type=float, default=1.1)
     ap.add_argument("--test_subset_size", type=int, default=None)
     return ap.parse_args()
 
@@ -726,6 +760,9 @@ def main():
             topk_k=args.topk_k, topk_temp=args.topk_temp, temperature=args.temperature,
             top_k_hits=[int(k) for k in args.top_k_hits.split(",")],
             batch_size=args.batch_size, num_workers=args.num_workers, bin_width=args.bin_width,
+            architecture=args.architecture, candidate_setting=args.candidate_setting,
+            max_mz=args.max_mz, n_peaks=args.n_peaks,
+            prec_mz_intensity=args.prec_mz_intensity,
             test_subset_size=args.test_subset_size,
         )
         run_evaluation(Path(args.pred_dir), Path(args.out_dir), config,

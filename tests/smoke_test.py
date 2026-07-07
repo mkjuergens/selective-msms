@@ -272,6 +272,47 @@ def test_confidence_detection():
     assert is_confidence_score("bitwise_total") is False
     assert is_confidence_score("rank_var_1") is False
 
+
+def test_architecture_registry():
+    """Architecture registry resolves MLP eagerly and transformer lazily."""
+    from ms_uq.models.fingerprint_mlp import FingerprintPredicter
+    from ms_uq.models.registry import get_model_class, normalize_architecture
+
+    assert normalize_architecture(None) == "mlp"
+    assert normalize_architecture("peak_transformer") == "transformer"
+    assert get_model_class("mlp") is FingerprintPredicter
+    assert get_model_class("transformer").__name__ == "FingerprintPredicterTransformer"
+
+
+def test_candidate_path_resolution():
+    """Formula candidates resolve; missing mass candidates fail clearly."""
+    from tempfile import TemporaryDirectory
+    from pathlib import Path
+    from ms_uq.utils.helper_functions import resolve_candidate_paths
+
+    with TemporaryDirectory() as tmpdir:
+        helper = Path(tmpdir)
+        for name in (
+            "MassSpecGym_retrieval_candidates_formula.json",
+            "MassSpecGym_retrieval_candidates_formula_fps.npz",
+            "MassSpecGym_retrieval_candidates_formula_inchi.npz",
+        ):
+            (helper / name).touch()
+
+        cand, fps, inchi = resolve_candidate_paths(helper, "formula")
+        assert cand.name.endswith("formula.json")
+        assert fps.name.endswith("formula_fps.npz")
+        assert inchi.name.endswith("formula_inchi.npz")
+
+        try:
+            resolve_candidate_paths(helper, "mass")
+        except FileNotFoundError as exc:
+            msg = str(exc)
+            assert "candidate_setting='mass'" in msg
+            assert "MassSpecGym_retrieval_candidates_mass" in msg
+        else:
+            raise AssertionError("mass candidate resolution should fail when mass files are absent")
+
 if __name__ == "__main__":
     print("=" * 60)
     print("ms_uq smoke test")
@@ -291,6 +332,8 @@ if __name__ == "__main__":
         ("binary entropy", test_binary_entropy),
         ("similarity matrix", test_similarity_matrix),
         ("confidence score detection", test_confidence_detection),
+        ("architecture registry", test_architecture_registry),
+        ("candidate path resolution", test_candidate_path_resolution),
     ]
 
     for name, fn in tests:
