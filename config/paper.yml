@@ -1,7 +1,7 @@
 paper:
   title: Selective prediction for reliable molecular structure retrieval from tandem mass spectra
   url: https://arxiv.org/abs/2603.10950
-  zenodo_doi: null
+  zenodo_doi: 10.5281/zenodo.19108280
 
 evaluation:
   temperature: 0.003

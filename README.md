@@ -4,6 +4,8 @@ Code and frozen artifacts for selective molecular-structure retrieval from tande
 
 Paper: [arXiv:2603.10950](https://arxiv.org/abs/2603.10950)
 
+Artifacts: [10.5281/zenodo.19108280](https://doi.org/10.5281/zenodo.19108280)
+
 ## Repository Layout
 
 ```text
@@ -66,8 +68,6 @@ The model artifact groups are:
 
 The result matrix covers official formula candidates, paired capped and uncapped formula candidates, and the available capped mass candidates. Candidate records are preserved without deduplication in the primary analysis, and `T_eval=0.003` is used throughout.
 
-The Zenodo DOI will be added here before publication.
-
 ## Report-Only Reproduction
 
 Recreate the numerical/figure bundle and static HTML index from `results.zip` alone:
@@ -120,7 +120,7 @@ Use `--candidate_setting mass --label_mode inchikey` with the matching mass help
 
 ## Preparing a Release
 
-Maintainers can inventory, build, and verify the canonical release with:
+Maintainers can inventory, build, finalize, and verify the canonical release with:
 
 ```bash
 python scripts/prepare_release.py plan
@@ -128,10 +128,13 @@ python scripts/prepare_release.py plan
 python scripts/prepare_release.py build \
   --source-run /path/to/completed-paper-run
 
+python scripts/prepare_release.py finalize
+
 python scripts/prepare_release.py verify
 ```
 
 `prepare_release.py` does not download data or retrain models. It verifies all source hashes, materializes `outputs/paper_results`, creates deterministic ZIP64 archives, and rejects external MassSpecGym payloads in the deposit.
+After committing source or DOI metadata, `finalize` rebuilds only the small `source.zip`, `README.md`, `MANIFEST.tsv`, and `SHA256SUMS`; it preserves the large scientific payload archives.
 
 ## License
 

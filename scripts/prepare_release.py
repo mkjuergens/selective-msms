@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plan, build, and verify the paper's canonical repository artifacts."""
+"""Plan, build, finalize, and verify the paper's canonical artifacts."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from ms_uq.evaluation.artifacts import (
     build_inventory,
     build_paper_results,
     build_release,
+    finalize_release,
     validate_paper_results,
     verify_release,
 )
@@ -37,6 +38,12 @@ def main() -> None:
     build.add_argument("--force-results", action="store_true")
     build.add_argument("--copy-results", action="store_true", help="Copy rather than hard-link local canonical results")
     build.add_argument("--skip-archives", action="store_true", help="Build and validate outputs/paper_results only")
+
+    finalize = commands.add_parser(
+        "finalize",
+        help="Refresh source and release metadata without rewriting large payload archives",
+    )
+    add_common(finalize)
 
     verify = commands.add_parser("verify", help="Verify canonical results and all release archives")
     add_common(verify)
@@ -71,6 +78,12 @@ def main() -> None:
             release_report = build_release(repo, source_run, results_dir, release_dir)
             print(json.dumps(release_report, indent=2))
             print(f"Seven-file release: {release_dir}")
+        return
+
+    if args.command == "finalize":
+        release_report = finalize_release(repo, release_dir)
+        print(json.dumps(release_report, indent=2))
+        print(f"Finalized source and metadata in: {release_dir}")
         return
 
     result_report = validate_paper_results(results_dir)

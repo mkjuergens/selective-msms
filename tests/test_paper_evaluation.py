@@ -16,6 +16,30 @@ from ms_uq.data import candidate_fps_to_dense
 from ms_uq.utils import resolve_candidate_paths
 
 
+def test_release_readme_records_reserved_doi_and_source_commit():
+    from ms_uq.evaluation.artifacts import _release_readme, artifact_doi
+
+    config = {
+        "paper": {
+            "title": "Paper",
+            "url": "https://example.org/paper",
+            "zenodo_doi": "10.5281/zenodo.19108280",
+        }
+    }
+    source_commit = "a" * 40
+    text = _release_readme(config, source_commit)
+    assert artifact_doi(config) == "10.5281/zenodo.19108280"
+    assert "https://doi.org/10.5281/zenodo.19108280" in text
+    assert source_commit in text
+
+
+def test_release_requires_a_reserved_zenodo_doi():
+    from ms_uq.evaluation.artifacts import artifact_doi
+
+    with pytest.raises(ValueError, match="reserved Zenodo DOI"):
+        artifact_doi({"paper": {"zenodo_doi": None}})
+
+
 def test_sgr_split_is_deterministic_and_disjoint():
     cal1, eval1 = make_cal_eval_split(101, cal_fraction=0.5, seed=42)
     cal2, eval2 = make_cal_eval_split(101, cal_fraction=0.5, seed=42)

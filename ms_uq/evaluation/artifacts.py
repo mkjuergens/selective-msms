@@ -328,6 +328,28 @@ def load_paper_config(repo: Path) -> dict:
     return yaml.safe_load((repo / "config/paper.yml").read_text())
 
 
+def artifact_doi(config: Mapping[str, object]) -> str:
+    paper = config.get("paper", {})
+    doi = str(paper.get("zenodo_doi", "")).strip() if isinstance(paper, Mapping) else ""
+    if not doi.startswith("10.5281/zenodo.") or not doi.removeprefix("10.5281/zenodo.").isdigit():
+        raise ValueError("config/paper.yml must contain a reserved Zenodo DOI")
+    return doi
+
+
+def _git_source_commit(repo: Path, *, require_clean: bool = True) -> str:
+    if require_clean:
+        status = subprocess.run(
+            ["git", "status", "--porcelain"], cwd=repo, check=True,
+            stdout=subprocess.PIPE, text=True,
+        ).stdout.strip()
+        if status:
+            raise RuntimeError("Commit intentional source changes before finalizing the release")
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True,
+        stdout=subprocess.PIPE, text=True,
+    ).stdout.strip()
+
+
 def write_external_data(source_run: Path, output: Path, config: Mapping[str, object]) -> None:
     inputs = _sanitized_inputs(source_run)
     inputs = inputs[inputs.role == "external_data"].copy()
@@ -421,11 +443,26 @@ def _tracked_source_members(repo: Path, extra: Sequence[Path]) -> list[tuple[Pat
     return [(path, f"artifacts/source/{path.relative_to(repo).as_posix()}", "source", "", "") for path in sorted(set(paths))]
 
 
-def _release_readme(config: Mapping[str, object]) -> str:
+def _source_archive_members(repo: Path, extra: Sequence[Path], source_commit: str) -> list[tuple[Path | bytes, str, str, str, str]]:
+    members = _tracked_source_members(repo, extra)
+    members.append((
+        f"{source_commit}\n".encode(),
+        "artifacts/source/SOURCE_COMMIT",
+        "source_metadata", "", "",
+    ))
+    return members
+
+
+def _release_readme(config: Mapping[str, object], source_commit: str) -> str:
     paper = config.get("paper", {})
+    doi = artifact_doi(config)
     return f"""# Selective MS/MS Paper Artifacts
 
 Artifacts for [{paper.get('title', 'Selective prediction for MS/MS retrieval')}]({paper.get('url', 'https://arxiv.org/abs/2603.10950')}).
+
+Zenodo DOI: [{doi}](https://doi.org/{doi})
+
+Source commit: `{source_commit}`
 
 ## Files
 
@@ -457,6 +494,44 @@ Official formula candidates include the formula MLP and transformer ensembles, M
 """
 
 
+def _write_manifest(path: Path, members: Sequence[ReleaseMember]) -> None:
+    archive_order = {name: index for index, name in enumerate([
+        "source.zip", "results.zip", "predictions.zip", "checkpoints.zip",
+    ])}
+    ordered = sorted(members, key=lambda row: (archive_order.get(row.archive, 99), row.archive_path))
+    with path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(ReleaseMember.__dataclass_fields__), delimiter="\t")
+        writer.writeheader()
+        writer.writerows([member.__dict__ for member in ordered])
+
+
+def _read_manifest(path: Path) -> list[ReleaseMember]:
+    with path.open(newline="") as handle:
+        return [
+            ReleaseMember(
+                archive=row["archive"], archive_path=row["archive_path"], role=row["role"],
+                model=row["model"], split=row["split"], size_bytes=int(row["size_bytes"]),
+                sha256=row["sha256"],
+            )
+            for row in csv.DictReader(handle, delimiter="\t")
+        ]
+
+
+def _write_release_metadata(
+    release_dir: Path,
+    config: Mapping[str, object],
+    source_commit: str,
+    members: Sequence[ReleaseMember],
+) -> None:
+    release_dir.mkdir(parents=True, exist_ok=True)
+    (release_dir / "README.md").write_text(_release_readme(config, source_commit))
+    _write_manifest(release_dir / "MANIFEST.tsv", members)
+    checksummed = ["README.md", "MANIFEST.tsv", "source.zip", "results.zip", "predictions.zip", "checkpoints.zip"]
+    (release_dir / "SHA256SUMS").write_text("".join(
+        f"{sha256(release_dir / name)}  {name}\n" for name in checksummed
+    ))
+
+
 def build_release(repo: Path, source_run: Path, results_dir: Path, release_dir: Path) -> dict:
     config = load_paper_config(repo)
     result_report = validate_paper_results(results_dir)
@@ -466,8 +541,12 @@ def build_release(repo: Path, source_run: Path, results_dir: Path, release_dir: 
 
     external = repo / "EXTERNAL_DATA.tsv"
     write_external_data(source_run, external, config)
+    source_commit = _git_source_commit(repo)
     members: list[ReleaseMember] = []
-    members += _write_zip(release_dir / "source.zip", _tracked_source_members(repo, [external]))
+    members += _write_zip(
+        release_dir / "source.zip",
+        _source_archive_members(repo, [external], source_commit),
+    )
     result_members = [
         (path, f"artifacts/results/{path.relative_to(results_dir).as_posix()}", "result", "", "")
         for path in sorted(results_dir.rglob("*")) if path.is_file()
@@ -496,15 +575,38 @@ def build_release(repo: Path, source_run: Path, results_dir: Path, release_dir: 
         checkpoint_members.append((item["path"], archive_path, "checkpoint", item["model"], ""))
     members += _write_zip(release_dir / "checkpoints.zip", checkpoint_members)
 
-    release_dir.mkdir(parents=True, exist_ok=True)
-    readme = release_dir / "README.md"
-    readme.write_text(_release_readme(config))
-    with (release_dir / "MANIFEST.tsv").open("w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(ReleaseMember.__dataclass_fields__), delimiter="\t")
-        writer.writeheader()
-        writer.writerows([member.__dict__ for member in members])
-    checksummed = ["README.md", "MANIFEST.tsv", "source.zip", "results.zip", "predictions.zip", "checkpoints.zip"]
-    (release_dir / "SHA256SUMS").write_text("".join(f"{sha256(release_dir / name)}  {name}\n" for name in checksummed))
+    _write_release_metadata(release_dir, config, source_commit, members)
+    return verify_release(release_dir)
+
+
+def finalize_release(repo: Path, release_dir: Path) -> dict:
+    """Refresh source.zip and release metadata while preserving large payload ZIPs."""
+    required = [
+        release_dir / "MANIFEST.tsv",
+        release_dir / "results.zip",
+        release_dir / "predictions.zip",
+        release_dir / "checkpoints.zip",
+    ]
+    missing = [str(path) for path in required if not path.is_file()]
+    if missing:
+        raise FileNotFoundError(f"Cannot finalize an incomplete release: {missing}")
+
+    config = load_paper_config(repo)
+    artifact_doi(config)
+    source_commit = _git_source_commit(repo)
+    external = repo / "EXTERNAL_DATA.tsv"
+    if not external.is_file():
+        raise FileNotFoundError(external)
+
+    existing = [
+        member for member in _read_manifest(release_dir / "MANIFEST.tsv")
+        if member.archive != "source.zip"
+    ]
+    source_members = _write_zip(
+        release_dir / "source.zip",
+        _source_archive_members(repo, [external], source_commit),
+    )
+    _write_release_metadata(release_dir, config, source_commit, [*source_members, *existing])
     return verify_release(release_dir)
 
 
@@ -531,6 +633,26 @@ def verify_release(release_dir: Path) -> dict:
                     bad_members.append(f"{name}:{info.filename}")
     checks.append({"name": "ZIP64 archives pass CRC checks", "passed": not zip_errors, "observed": zip_errors})
     checks.append({"name": "archive members are relative regular files under artifacts", "passed": not bad_members, "observed": bad_members})
+    with zipfile.ZipFile(release_dir / "source.zip") as source_archive:
+        source_names = set(source_archive.namelist())
+        commit_name = "artifacts/source/SOURCE_COMMIT"
+        config_name = "artifacts/source/config/paper.yml"
+        source_commit = source_archive.read(commit_name).decode().strip() if commit_name in source_names else ""
+        source_config = yaml.safe_load(source_archive.read(config_name)) if config_name in source_names else {}
+    source_doi = artifact_doi(source_config) if source_config else ""
+    readme_text = (release_dir / "README.md").read_text()
+    source_metadata_ok = (
+        len(source_commit) == 40
+        and all(character in "0123456789abcdef" for character in source_commit)
+        and bool(source_doi)
+        and source_doi in readme_text
+        and source_commit in readme_text
+    )
+    checks.append({
+        "name": "source commit and Zenodo DOI are recorded consistently",
+        "passed": source_metadata_ok,
+        "observed": {"source_commit": source_commit, "zenodo_doi": source_doi},
+    })
     manifest = pd.read_csv(release_dir / "MANIFEST.tsv", sep="\t")
     checks.append({"name": "manifest contains seven predictions and 18 checkpoints", "passed": int((manifest.role == "prediction").sum()) == 7 and int((manifest.role == "checkpoint").sum()) == 18, "observed": {"predictions": int((manifest.role == "prediction").sum()), "checkpoints": int((manifest.role == "checkpoint").sum())}})
     forbidden = [path for path in manifest.archive_path if Path(path).name.startswith("MassSpecGym") or Path(path).name == "massspecgym_118m_mira.json"]
