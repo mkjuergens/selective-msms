@@ -28,6 +28,9 @@ class SGRResult:
     target_risk: float
     delta: float
     feasible: bool = True
+    eval_coverage: Optional[float] = None
+    eval_empirical_risk: Optional[float] = None
+    eval_n_selected: Optional[int] = None
     
     def __repr__(self) -> str:
         return (f"SGRResult(bound={self.risk_bound:.4f}, coverage={self.coverage:.4f}, "
@@ -290,6 +293,42 @@ def fit_sgr(
     return SelectiveGuaranteedRisk(higher_is_confident, binary_loss).fit(
         confidence, losses, target_risk, delta, verbose
     )
+
+
+def make_cal_eval_split(
+    n_samples: int,
+    cal_fraction: float = 0.5,
+    seed: int = 42,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Create the deterministic SGR calibration/evaluation split used in the paper."""
+    if n_samples <= 1:
+        raise ValueError("SGR split requires at least two samples.")
+    if not 0.0 < cal_fraction < 1.0:
+        raise ValueError("cal_fraction must be strictly between 0 and 1.")
+    rng = np.random.default_rng(seed)
+    perm = rng.permutation(n_samples)
+    n_cal = int(n_samples * cal_fraction)
+    n_cal = min(max(n_cal, 1), n_samples - 1)
+    return perm[:n_cal], perm[n_cal:]
+
+
+def attach_eval_result(
+    sgr: SelectiveGuaranteedRisk,
+    result: SGRResult,
+    confidence: Union[torch.Tensor, np.ndarray],
+    losses: Union[torch.Tensor, np.ndarray],
+) -> SGRResult:
+    """Evaluate a fitted SGR selector on held-out data and attach eval fields."""
+    if result.feasible:
+        eval_risk, eval_coverage = sgr.evaluate(confidence, losses)
+        result.eval_empirical_risk = float(eval_risk)
+        result.eval_coverage = float(eval_coverage)
+        result.eval_n_selected = int(round(eval_coverage * len(losses)))
+    else:
+        result.eval_empirical_risk = np.nan
+        result.eval_coverage = np.nan
+        result.eval_n_selected = 0
+    return result
 
 
 def compare_uncertainty_scores(

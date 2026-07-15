@@ -147,7 +147,7 @@ def decompose_categorical(
     sample_dim: int = 1,
     category_dim: int = -1,
     is_logits: bool = True,
-    temperature: float = 1.0,
+    temperature: float = 0.003,
     normalize_entropy: bool = False,
 ) -> UncertaintyDecomposition:
     """

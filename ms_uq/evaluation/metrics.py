@@ -132,7 +132,7 @@ def hit_at_k_ragged(
     labels_flat: Tensor,
     ptr: Tensor,
     k: int = 1,
-    tie_break: str = "random"
+    tie_break: str = "first"
 ) -> Tensor:
     """
     Hit@k for ragged candidate lists.
@@ -158,11 +158,14 @@ def hit_at_k_ragged(
         lab = labels_flat[start:end]
         
         if tie_break == "random":
-            s = s + torch.rand_like(s) * 1e-6
-        
+            generator = torch.Generator(device=s.device).manual_seed(i)
+            s = s + torch.rand(s.shape, generator=generator, device=s.device, dtype=s.dtype) * 1e-12
+        elif tie_break != "first":
+            raise ValueError("tie_break must be one of: first, random")
+
         n_cand = end - start
         k_actual = min(k, n_cand)
-        topk_idx = s.topk(k_actual).indices
+        topk_idx = torch.argsort(s, descending=True, stable=True)[:k_actual]
         hits[i] = lab[topk_idx].any().float()
     
     return hits
@@ -172,7 +175,7 @@ def compute_score_statistics(
     scores_flat: Tensor,
     ptr: Tensor,
     k: int = 5,
-    temperature: float = 1.0
+    temperature: float = 0.003
 ) -> Dict[str, Tensor]:
     """
     Compute score-based statistics per query.
@@ -306,12 +309,9 @@ def compute_aurc_general(
             rej_pct, kept_loss = rejection_curve(loss_tensor, loss_tensor)
             results[loss_name]["oracle"] = aurc_from_curve(rej_pct, kept_loss)
         
-        # Random baseline
+        # Analytic expected random AURC equals the mean loss.
         if include_random:
-            rng = np.random.default_rng(42)
-            random_unc = torch.tensor(rng.random(len(loss_array)), dtype=torch.float32)
-            rej_pct, kept_loss = rejection_curve(loss_tensor, random_unc)
-            results[loss_name]["random"] = aurc_from_curve(rej_pct, kept_loss)
+            results[loss_name]["random"] = float(np.mean(loss_array, dtype=np.float64))
         
         # All metrics
         for metric_name, metric_vals in metrics.items():
@@ -419,12 +419,9 @@ def compute_aurc_all_losses(
             rej_pct, kept_loss = rejection_curve(loss_tensor, loss_tensor)
             results[loss_name]["oracle"] = aurc_from_curve(rej_pct, kept_loss)
         
-        # Random baseline
+        # Analytic expected random AURC equals the mean loss.
         if include_random:
-            rng = np.random.default_rng(42)
-            random_unc = torch.tensor(rng.random(len(loss_vals)), dtype=torch.float32)
-            rej_pct, kept_loss = rejection_curve(loss_tensor, random_unc)
-            results[loss_name]["random"] = aurc_from_curve(rej_pct, kept_loss)
+            results[loss_name]["random"] = float(np.mean(loss_vals, dtype=np.float64))
         
         # All metrics
         for metric_name, metric_vals in metrics.items():

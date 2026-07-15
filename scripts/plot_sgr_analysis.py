@@ -81,13 +81,14 @@ _FALLBACK = [("-", "o"), ("--", "s"), ("-.", "^"), (":", "D")]
 # Legend strip width (design inches)
 _LEG_W = 1.6
 
-# Default measures: one per family, maximum separation
+# Best five single-score selectors by mean validation relAURC across the two
+# formula-trained architectures and Hit@1/5/20 in the canonical T=0.003 run.
 DEFAULT_MEASURES = [
-    "confidence",           # first-order retrieval
-    "score_gap",            # score-gap family
-    "rank_var_5",           # rank variance (mid-K)
-    "rank_var_1",           # rank variance (strict)
-    "retrieval_epistemic",  # epistemic baseline
+    "retrieval_total",
+    "retrieval_aleatoric",
+    "confidence",
+    "rank_var_20",
+    "rank_var_5",
 ]
 
 
@@ -103,12 +104,21 @@ def plot_sgr_coverage(
     measures: Optional[List[str]] = None,
     loss_cols: Optional[List[str]] = None,
     category: str = "retrieval",
+    run_label: Optional[str] = None,
 ) -> None:
     measures = measures or DEFAULT_MEASURES
 
     # Filter category
     if "category" in sgr_df.columns:
         sgr_df = sgr_df[sgr_df["category"] == category].copy()
+    if run_label is not None:
+        if "run_label" not in sgr_df.columns:
+            raise ValueError("--run_label was provided but the SGR table has no run_label column")
+        sgr_df = sgr_df[sgr_df["run_label"] == run_label].copy()
+        if sgr_df.empty:
+            raise ValueError(f"No SGR rows for run_label={run_label}")
+    elif "run_label" in sgr_df.columns and sgr_df["run_label"].nunique() > 1:
+        raise ValueError("SGR table contains multiple run labels; select one with --run_label")
 
     # Determine panels
     all_losses = sorted(
@@ -126,6 +136,7 @@ def plot_sgr_coverage(
     all_risks = sorted(sgr_df["target_risk"].unique())
     x_lo = min(all_risks) - 0.02
     x_hi = max(all_risks) + 0.02
+    x_ticks = np.arange(min(all_risks), max(all_risks) + 1e-9, 0.1)
 
     # ── Layout: 2 rows × n panels + legend strip ────────────────────
     leg_ratio = _LEG_W / (_ROW_W / n)
@@ -148,15 +159,23 @@ def plot_sgr_coverage(
         _setup_ax(ax)
 
         sub = sgr_df[sgr_df["loss"] == loss_name]
-        feas = sub[sub["feasible"] == True]
         max_cov = 0.0
 
         for mi, mname in enumerate(measures):
-            ms = feas[feas["measure"] == mname].sort_values("target_risk")
+            ms = sub[sub["measure"] == mname].sort_values("target_risk")
             if ms.empty:
                 continue
-            rs, cov = ms["target_risk"].values, ms["coverage"].values
-            max_cov = max(max_cov, cov.max())
+            rs, cov = [], []
+            for target_risk in all_risks:
+                row = ms[ms["target_risk"] == target_risk]
+                if row.empty or not bool(row.iloc[0]["feasible"]):
+                    rs.append(target_risk)
+                    cov.append(0.0)
+                else:
+                    rs.append(target_risk)
+                    cov.append(float(row.iloc[0]["coverage"]))
+            rs, cov = np.asarray(rs), np.asarray(cov)
+            max_cov = max(max_cov, float(np.nanmax(cov)))
             color = get_metric_color(mname)
             ls, marker = _get_style(mname, mi)
             ax.plot(rs, cov, color=color, ls=ls, marker=marker,
@@ -165,24 +184,29 @@ def plot_sgr_coverage(
 
         # Annotate best at max r*
         r_max = max(all_risks)
+        feas = sub[sub["feasible"] == True]
         at_rmax = feas[(feas["target_risk"] == r_max) &
                        (feas["measure"].isin(measures))]
         if not at_rmax.empty:
             best = at_rmax.loc[at_rmax["coverage"].idxmax()]
+            best_coverage = float(best["coverage"])
+            near_ceiling = best_coverage >= 0.9
             ax.annotate(
-                f"{best['coverage']:.1%}",
-                xy=(best["target_risk"], best["coverage"]),
-                xytext=(-4, 8), textcoords="offset points",
+                f"{best_coverage:.1%}",
+                xy=(best["target_risk"], best_coverage),
+                xytext=(-4, -10 if near_ceiling else 8), textcoords="offset points",
                 fontsize=_FT - 2, fontweight="medium",
                 color="#444444", ha="right",
+                va="top" if near_ceiling else "bottom",
             )
 
-        y_top = max(0.05, max_cov * 1.30)
+        y_top = min(1.0, max(0.05, max_cov * 1.30))
         ax.set_ylim(-0.005, y_top)
         ax.yaxis.set_major_formatter(mticker.PercentFormatter(xmax=1, decimals=0))
         ax.tick_params(axis="both", labelsize=_FT)
         ax.set_xlim(x_lo, x_hi)
-        ax.set_xticks(all_risks)
+        ax.set_xticks(x_ticks)
+        ax.xaxis.set_major_formatter(mticker.FormatStrFormatter("%.1f"))
         ax.set_xticklabels([])           # x-labels only on bottom row
         ax.set_ylabel("Coverage" if idx == 0 else "", fontsize=_FL)
         ax.set_title(loss_name.replace("hit@", "Hit@"), fontsize=_FH)
@@ -212,7 +236,8 @@ def plot_sgr_coverage(
 
         ax.set_xlim(x_lo, x_hi)
         ax.set_ylim(-0.01, max(all_risks) + 0.02)
-        ax.set_xticks(all_risks)
+        ax.set_xticks(x_ticks)
+        ax.xaxis.set_major_formatter(mticker.FormatStrFormatter("%.1f"))
         ax.set_xlabel(r"Target risk $r^*$", fontsize=_FL)
         ax.tick_params(axis="both", labelsize=_FT)
         ax.set_ylabel("Empirical risk" if idx == 0 else "", fontsize=_FL)
@@ -244,6 +269,7 @@ def plot_sgr_coverage(
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    fig.savefig(out_path.with_suffix(".png"), dpi=220, bbox_inches="tight")
     plt.close(fig)
     print(f"Saved: {out_path}")
 
@@ -258,6 +284,10 @@ def load_sgr_csv(path: Path) -> pd.DataFrame:
         "uncertainty": "measure",
     }
     df = df.rename(columns={k: v for k, v in renames.items() if k in df.columns})
+    if "coverage" not in df.columns and "eval_coverage" in df.columns:
+        df["coverage"] = df["eval_coverage"]
+    if "empirical_risk" not in df.columns and "eval_empirical_risk" in df.columns:
+        df["empirical_risk"] = df["eval_empirical_risk"]
 
     for col in ["loss", "measure", "target_risk", "coverage", "feasible"]:
         if col not in df.columns:
@@ -278,6 +308,7 @@ def main():
     ap.add_argument("--measures", nargs="*", default=None)
     ap.add_argument("--losses", nargs="*", default=None)
     ap.add_argument("--category", type=str, default="retrieval")
+    ap.add_argument("--run_label")
     args = ap.parse_args()
 
     df = load_sgr_csv(args.sgr_csv)
@@ -286,6 +317,7 @@ def main():
         measures=args.measures,
         loss_cols=args.losses,
         category=args.category,
+        run_label=args.run_label,
     )
 
 

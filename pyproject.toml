@@ -22,6 +22,7 @@ dependencies = [
     "torchmetrics",
     "numpy",
     "pandas",
+    "pyarrow",
     "scipy",
     "scikit-learn",
     "matplotlib",
@@ -41,7 +42,7 @@ dev = [
 
 [project.urls]
 Repository = "https://github.com/BioML-UGent/selective-msms"
-Paper = "https://arxiv.org/abs/TODO"
+Paper = "https://arxiv.org/abs/2603.10950"
 
 [tool.setuptools.packages.find]
 include = ["ms_uq*"]

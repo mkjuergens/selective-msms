@@ -71,7 +71,14 @@ def make_parser() -> argparse.ArgumentParser:
 
     # Data/loader
     p.add_argument("--architecture", choices=["mlp", "transformer"], default="mlp")
-    p.add_argument("--candidate_setting", choices=["formula", "mass"], default="formula")
+    p.add_argument("--candidate_setting", choices=["formula", "mass", "formula_uncapped"], default="formula")
+    p.add_argument(
+        "--label_mode",
+        choices=["fingerprint", "inchikey", "inchikey_fallback"],
+        default="fingerprint",
+        help="How to mark the positive retrieval candidate. Use inchikey for candidate sets whose "
+             "fingerprints may not exactly match the query helper fingerprint.",
+    )
     p.add_argument("--bin_width", type=float, default=0.1)
     p.add_argument("--max_mz", type=float, default=1005.0)
     p.add_argument("--batch_size", type=int, default=64)
@@ -108,7 +115,7 @@ def make_parser() -> argparse.ArgumentParser:
 
     p.add_argument("--fpwise_iou_jml_v", type=boolean, default=False)
 
-    p.add_argument("--rankwise_temp", type=float, default=1.0)
+    p.add_argument("--rankwise_temp", type=float, default=0.003)
     p.add_argument("--rankwise_dropout", type=float, default=0.2)
     p.add_argument("--rankwise_sim_func", type=str, default="cossim")
     p.add_argument("--rankwise_projector", type=boolean, default=False)
@@ -158,7 +165,14 @@ def main():
     
     parser = make_parser()
     args = parser.parse_args()
-    print("architecture =", args.architecture, "candidate_setting =", args.candidate_setting)
+    print(
+        "architecture =",
+        args.architecture,
+        "candidate_setting =",
+        args.candidate_setting,
+        "label_mode =",
+        args.label_mode,
+    )
 
     # Reproducibility
     seed_everything(args.seed, workers=True)
@@ -181,6 +195,7 @@ def main():
         candidate_setting=args.candidate_setting,
         n_peaks=args.n_peaks,
         prec_mz_intensity=args.prec_mz_intensity,
+        label_mode=args.label_mode,
     )
 
     data_module = MassSpecDataModule(

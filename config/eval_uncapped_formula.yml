@@ -1,0 +1,60 @@
+# Evaluate the existing capped-formula-trained MLP and transformer ensembles
+# on the packed, test-only uncapped formula candidate helpers.
+
+common:
+  dataset_tsv: /data/home/mira/data/msuq/MassSpecGym.tsv
+  helper_dir: /data/home/mira/data/msuq
+  gt_path: /data/home/mira/data/msuq/ground_truth_bits_labels_test.pt
+  base_out_dir: /data/home/mira/selective-msms/outputs/revision_uncapped/eval
+
+  candidate_setting: formula_uncapped
+  label_mode: inchikey_fallback
+  max_mz: 1005.0
+  n_peaks: 128
+  prec_mz_intensity: 1.1
+  bin_width: 0.1
+
+  metric: cosine
+  aggregations: [score]
+  temperature: 0.003
+  top_k_hits: [1, 5, 20]
+
+  retrieval_measures:
+    - retrieval_total
+    - retrieval_aleatoric
+    - retrieval_epistemic
+    - normalized_entropy
+    - confidence
+    - score_gap
+    - rank_var_1
+    - rank_var_5
+    - rank_var_20
+    - n_candidates
+
+  fingerprint_measures:
+    - bitwise_total
+    - bitwise_aleatoric
+    - bitwise_epistemic
+
+  distance_measures: []
+
+  # Large candidate pools are decoded one query at a time. Change the CUDA
+  # device if needed; after score generation, downstream analysis is CPU-only.
+  device: cuda:2
+  batch_size: 1
+  num_workers: 0
+  overwrite: false
+
+model_groups:
+  ensemble:
+    out_subdir: ""
+    models:
+      mlp:
+        architecture: mlp
+        label: MLP Deep Ensemble (Uncapped formula)
+        pred_dir: /data/home/mira/data/msuq/logs/ensemble_20251222-1218/predictions
+
+      transformer:
+        architecture: transformer
+        label: Transformer Deep Ensemble (Uncapped formula)
+        pred_dir: /data/home/mira/selective-msms/outputs/revision_analysis/transformer_ensemble_formula/pred

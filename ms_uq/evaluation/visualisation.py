@@ -31,6 +31,7 @@ DEFAULT_COLOR_MAP = {
     "score_gap":                "#7fbfff",
     "margin":                   "#7fbfff",
     "retrieval_total":          "#9ecae1",
+    "normalized_entropy":       "#9ecae1",
     "rank_var_1":               "#7fbfff",
     "rank_var_5":               "#7fbfff",
     "rank_var_20":              "#7fbfff",
@@ -93,6 +94,7 @@ METRIC_STYLES: Dict[str, Tuple[str, str]] = {
     "confidence":               ("-",            "o"),
     "score_gap":                ("-",            "s"),
     "retrieval_total":          ("--",           "v"),
+    "normalized_entropy":       ("--",           "o"),
     "margin":                   ("-",            "s"),
     "rank_var_1":               (":",            "D"),
     "rank_var_5":               (":",            "D"),
@@ -136,6 +138,7 @@ _HEATMAP_GROUPS = {
         "score_gap",
         "margin",
         "retrieval_total",
+        "normalized_entropy",
         "retrieval_aleatoric",
         "retrieval_epistemic",
         "rank_var_1",
@@ -173,6 +176,7 @@ DISPLAY_NAMES = {
     "retrieval_epistemic":      r"$\kappa_{\rm ret}^{\rm ep}$",
     "retrieval_aleatoric":      r"$\kappa_{\rm ret}^{\rm al}$",
     "retrieval_total":          r"$\kappa_{\rm ret}^{\rm tot}$",
+    "normalized_entropy":       r"$H(p)/\log |\mathcal{C}|$",
     # Fingerprint-level
     "bitwise_epistemic":        r"$\kappa_{\rm bit}^{\rm ep}$",
     "bitwise_aleatoric":        r"$\kappa_{\rm bit}^{\rm al}$",
@@ -775,6 +779,18 @@ def plot_member_vs_agg(
 
 
 
+def _sgr_eval_coverage(result) -> float:
+    value = getattr(result, "eval_coverage", None)
+    return result.coverage if value is None or np.isnan(value) else value
+
+
+def _sgr_eval_risk(result) -> float:
+    value = getattr(result, "eval_empirical_risk", None)
+    if value is None:
+        value = getattr(result, "eval_risk", None)
+    return result.empirical_risk if value is None or np.isnan(value) else value
+
+
 def _compute_rc_curve(
     confidence: np.ndarray,
     losses: np.ndarray,
@@ -886,7 +902,7 @@ def plot_sgr_coverage_combined(
             covs = []
             for r_star in feasible_risks:
                 res = data["sgr"][measure].get(r_star)
-                covs.append(res.coverage if res and res.feasible else 0)
+                covs.append(_sgr_eval_coverage(res) if res and res.feasible else 0)
             all_coverages[measure] = covs
         best_at_risk = [
             max(sorted_measures, key=lambda m: all_coverages[m][j])
@@ -1037,7 +1053,7 @@ def plot_sgr_risk_calibration(
                 res = data["sgr"][measure].get(r_star)
                 if res and res.feasible and res.coverage > 0.01:
                     target_vals.append(r_star)
-                    actual_vals.append(res.empirical_risk)
+                    actual_vals.append(_sgr_eval_risk(res))
             if target_vals:
                 ax.scatter(
                     target_vals, actual_vals,

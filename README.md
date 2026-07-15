@@ -1,6 +1,8 @@
 # Selective-MSMS
 Code for **"When Should We Trust the Annotation? Selective Prediction for Molecular Structure Retrieval from Mass Spectra"**.
 
+[Paper](https://arxiv.org/abs/2603.10950)
+
 We introduce a selective prediction framework for molecular structure retrieval from tandem mass spectra (MS/MS), enabling models to abstain from predictions when uncertainty is too high.
 
 All experiments are conducted on the [MassSpecGym](https://github.com/pluskal-lab/MassSpecGym) benchmark.
@@ -39,6 +41,7 @@ This codebase uses a custom dataset (`RetrievalDataset_PrecompFPandInchi` from [
 | `MassSpecGym_retrieval_candidates_formula.json` | Retrieval candidate lists (grouped by molecular formula) |
 | `MassSpecGym_retrieval_candidates_formula_fps.npz` | Precomputed fingerprints for all candidates |
 | `MassSpecGym_retrieval_candidates_formula_inchi.npz` | InChI keys for all candidates |
+| `MassSpecGym_retrieval_candidates_formula_uncapped.*` | Optional uncapped formula-candidate helpers for revision analyses |
 | `ground_truth_bits_labels_test.pt` | Ground-truth fingerprints and labels for the test set |
 
 The candidate lists and dataset TSV are provided by MassSpecGym. Fingerprint files must be precomputed from the SMILES strings using RDKit Morgan fingerprints (radius 2, 4096 bits), following the same procedure as [ms-mole](https://github.com/gdewael/ms-mole).
@@ -65,74 +68,107 @@ selective-msms/
 │   ├── run_sgr_evaluation.py       # evaluation script for risk control analysis
 │   └── plot_sgr_analysis.py        
 ├── config/                         
-│   └── sgr.yml                     # config for selective-risk-control analysis
-    └── eval.yml                    # config for running risk-coverage analysis                   
+│   ├── eval.yml                    # template for risk-coverage analysis
+│   ├── sgr.yml                     # template for selective-risk-control analysis
+│   ├── eval_paper_mlp_formula.yml  # paper MLP/formula reproduction config
+│   └── sgr_paper_mlp_formula.yml   # paper SGR reproduction config
 └── tests/
 ```
 
 
-## Pre-Trained Model Predictions
+## Pretrained Artifacts
 
-CURRENTLY UNDER CONSTRUCTION
-
-We provide pre-computed predictions for the models used in the paper,
-so that all evaluation results (Tables 2–4, Figures 2–5) can be
-reproduced without training.
+We provide precomputed predictions and archived paper results for the models used
+in the paper, so that the main evaluation tables and figures can be inspected or
+reproduced without retraining the models.
 
 **Download**: [Zenodo DOI TODO](https://zenodo.org/TODO)
 
 <!-- Alternative: [HuggingFace Hub](https://huggingface.co/datasets/BioML-UGent/selective-msms-predictions) -->
 
-The archive contains one directory per model:
+The first artifact contains model predictions and generated paper outputs only.
+It does not bundle the MassSpecGym data, helper files, or checkpoints. Prepare
+those files separately as described in [Data Preparation](#data-preparation) if
+you want to rerun the evaluation scripts.
 
-```
-predictions/
-├── ensemble_ranking/           # Deep Ensemble (S=5), ranking loss
-│   ├── fp_probs.pt             #   (N, 5, 4096) bitwise probabilities
-│   └── ranker.pt               #   learned biencoder scorer
-├── ensemble_focal/             # Deep Ensemble (S=5), focal loss
-│   └── fp_probs.pt
-├── mcdo_ranking/               # MC Dropout (S=50), ranking loss
-│   ├── fp_probs.pt
-│   └── ranker.pt
-├── mcdo_focal/                 # MC Dropout (S=50), focal loss
-│   └── fp_probs.pt
-├── laplace_ranking/            # Laplace (S=50), ranking loss
-│   ├── fp_probs.pt
-│   └── ranker.pt
-├── laplace_focal/              # Laplace (S=50), focal loss
-│   └── fp_probs.pt
-└── ground_truth_bits_labels_test.pt   # shared ground truth
+After downloading, extract the archive into the repository root. The expected
+layout is:
+
+```text
+MANIFEST.tsv
+checksums.sha256
+outputs/
+├── predictions/
+│   ├── ensemble_ranking/       # Deep Ensemble (S=5), ranking loss
+│   │   ├── fp_probs.pt         # (N, 5, 4096) bitwise probabilities
+│   │   └── ranker.pt           # learned biencoder scorer
+│   ├── ensemble_focal/         # Deep Ensemble (S=5), focal loss
+│   │   └── fp_probs.pt
+│   ├── mcdo_ranking/           # MC Dropout (S=50), ranking loss
+│   │   ├── fp_probs.pt
+│   │   └── ranker.pt
+│   ├── mcdo_focal/             # MC Dropout (S=50), focal loss
+│   │   └── fp_probs.pt
+│   ├── laplace_ranking/        # Laplace (S=50), ranking loss
+│   │   ├── fp_probs.pt
+│   │   └── ranker.pt
+│   └── laplace_focal/          # Laplace (S=50), focal loss
+│       └── fp_probs.pt
+└── paper_results/              # archived CSVs, score tensors, and figures
 ```
 
 Each `fp_probs.pt` is a dict `{"stack": tensor(N, S, 4096), "meta": {...}}` containing
-per-sample bitwise fingerprint probabilities from the test set.
-Ranking-loss models additionally include a `ranker.pt` (learned biencoder similarity);
-without it, scoring falls back to cosine similarity, which gives different (lower) performance for these models.
+per-sample bitwise fingerprint probabilities from the test set. Ranking-loss
+models additionally include a `ranker.pt` learned biencoder scorer; without it,
+scoring falls back to cosine similarity and the ranking-loss numbers will differ.
 
-### Evaluate without training
+The files in `outputs/paper_results/` are the generated evaluation artifacts
+from the paper runs. They can be inspected directly. To regenerate them from
+`outputs/predictions/`, the shared data files listed in
+[Data Preparation](#data-preparation), including `ground_truth_bits_labels_test.pt`,
+must be available in `helper_dir`.
 
-After downloading and extracting the predictions to `outputs/predictions/`:
+### Evaluate Without Training
+
+After downloading and extracting the artifact:
 
 ```bash
-# 1. Prepare MassSpecGym data (see Data Preparation below)
+# 1. Prepare MassSpecGym data and helper files separately.
 
-# 2. Update paths in config/eval.yml to point to your data and predictions
+# 2. Update dataset_tsv/helper_dir/gt_path in the config if needed.
 
-# 3. Run evaluation (produces risk-coverage curves, AURC tables, plots)
-python scripts/run_evaluation.py --config config/eval.yml --group ensemble
+# 3. Run risk-coverage/AURC evaluation from the precomputed predictions.
+python scripts/run_evaluation.py --config config/eval_paper_mlp_formula.yml --group ensemble
 
-# 4. Run SGR analysis (produces risk-controlled coverage, calibration plots)
-python scripts/run_sgr_evaluation.py --config config/sgr.yml --group ensemble
+# 4. Run SGR risk-control evaluation from the precomputed predictions.
+python scripts/run_sgr_evaluation.py --config config/sgr_paper_mlp_formula.yml --group ensemble
 ```
 
 The evaluation scripts detect `fp_probs.pt` in each `pred_dir` and skip
-prediction generation, proceeding directly to candidate scoring and
-uncertainty analysis.
+prediction generation, proceeding directly to candidate scoring and uncertainty
+analysis.
 
 ## Reproducing Paper Results
 
-Currently still under construction!
+The main retrieval baseline in the paper is the MLP Deep Ensemble trained with
+the ranking/BiEnc loss and evaluated with formula-filtered candidates. It uses
+score-level aggregation and the learned `ranker.pt`.
+
+| Model | Candidate setting | Aggregation | Hit@1 | Hit@5 | Hit@20 |
+|---|---|---|---:|---:|---:|
+| Deep Ensemble (Ranking/BiEnc) | formula | score | 13.12 | 27.29 | 47.57 |
+| Deep Ensemble (Focal) | formula | probability | 11.43 | 23.80 | 42.36 |
+
+For the ranking/BiEnc ensemble, compare new revision experiments primarily
+against:
+
+```text
+outputs/paper_results/eval_v6/ensemble/bienc/hit_rates_aggregate.csv
+outputs/paper_results/eval_v6/ensemble/bienc/rel_aurc_retrieval_score.csv
+```
+
+If these archived result files are not present, regenerate them from the
+precomputed predictions with `config/eval_paper_mlp_formula.yml`.
 
 
 
@@ -143,17 +179,19 @@ Currently still under construction!
 To train a single model or an ensemble model using the architecture and the ranking loss function, run the following command. Needs to contain paths to massspecgym data.
 ```bash
 python scripts/train_ensemble.py \
-    --<path>/MassSpecGym.tsv \ # path to massspecgym tsv 
-    --<path>/helper/ \ # directory with helper files
-    --<path>/logs \ # directory where logs should be saved
-    --method ensemble \
-    --n_members 5 \
-    --rankwise_loss bienc \
-    --rankwise_temp 0.003 \
-    --lr 0.0001 \
-    --layer_dim 1024 \
-    --bin_width 0.1 \
-    --devices "[1,2]" \
+  /path/to/MassSpecGym.tsv \
+  /path/to/helper_dir \
+  outputs/logs \
+  --method ensemble \
+  --n_members 5 \
+  --architecture mlp \
+  --candidate_setting formula \
+  --rankwise_loss bienc \
+  --rankwise_temp 0.003 \
+  --lr 0.0001 \
+  --layer_dim 1024 \
+  --bin_width 0.1 \
+  --devices "[0,1]"
 ```
 
 <!-- ### 2. Generate predictions
@@ -197,6 +235,128 @@ python scripts/run_sgr_evaluation.py --config config/sgr.yml --group ensemble
 This computes coverage at target risk levels with the SGR algorithm and generates calibration results.
 
 
+
+### Revision Analyses
+
+The revision experiments use the official MassSpecGym validation fold for learned
+meta-scores and reserve the test fold for final relAURC/SGR reporting.
+
+Run the reviewer-critical frozen-model revision matrix with one resumable command:
+
+```bash
+python scripts/run_revision_rerun.py \
+  --data-dir /data/home/mira/data/msuq \
+  --out-dir outputs/revision_rerun_v1 \
+  --device cuda:0
+```
+
+The default `core` scope covers official formula MLP/transformer results, paired
+capped-versus-uncapped formula evaluation for both architectures, formula-versus-
+mass evaluation for the MLP, mass-trained-versus-formula-trained MLP comparison on
+the same mass pool, temperature sensitivity, validation-only logistic meta-scores,
+and paper-parity SGR with seed 42. It omits bootstrap resampling and secondary
+sensitivity analyses so the complete run remains practical.
+
+The runner does not download data or retrain an ensemble. It validates and reuses
+existing fingerprint predictions, rebuilds candidate scores and derived metrics,
+and records commands, hashes, package versions, seeds, and resolved paths in
+`run_manifest.json`. Completed stages are reused only when their code/config/input
+signature still matches. Use `--stages temperature,meta`, `--force-stage meta`, or
+`--no-resume` for controlled reruns.
+
+The previous maximal scope remains available explicitly:
+
+```bash
+python scripts/run_revision_rerun.py \
+  --data-dir /data/home/mira/data/msuq \
+  --out-dir outputs/revision_rerun_extended \
+  --device cuda:0 \
+  --analysis-scope extended \
+  --bootstrap-replicates 2000 \
+  --sgr-repeats 100 \
+  --meta-ablation \
+  --write-candidate-manifest
+```
+
+A plumbing-only smoke run is available with
+`--max-queries 64 --bootstrap-replicates 5 --quick-hashes`; its numerical results
+are not suitable for the manuscript.
+
+```bash
+# Dataset/candidate audit and capped fingerprint-vs-InChIKey label check
+python scripts/audit_massspecgym.py \
+  --dataset_tsv /path/to/MassSpecGym.tsv \
+  --helper_dir /path/to/helper_dir \
+  --candidate_setting formula \
+  --out_dir outputs/revision_audit
+
+# Temperature sensitivity from cached MLP and transformer score files
+python scripts/run_temperature_sensitivity.py \
+  --model mlp=/path/to/mlp/eval_dir \
+  --model transformer=/path/to/transformer/eval_dir \
+  --gt_path /path/to/ground_truth_bits_labels_test.pt \
+  --out_dir outputs/revision_temperature
+
+# Prepare validation/test bundles for a trained ensemble
+python scripts/prepare_split_scores.py \
+  --split val \
+  --dataset_tsv /path/to/MassSpecGym.tsv \
+  --helper_dir /path/to/helper_dir \
+  --pred_dir outputs/revision_meta/model_val/pred \
+  --out_dir outputs/revision_meta/model_val \
+  --architecture mlp \
+  --candidate_setting formula \
+  --label_mode fingerprint \
+  --ckpts /comma/separated/member/checkpoints \
+  --device cuda:0
+
+# Train logistic meta-scores on validation and evaluate frozen scores on test
+python scripts/run_meta_score_analysis.py \
+  --model_label mlp \
+  --dataset_tsv /path/to/MassSpecGym.tsv \
+  --helper_dir /path/to/helper_dir \
+  --val_score outputs/revision_meta/model_val/scores_ranker_score.pt \
+  --val_fp_probs outputs/revision_meta/model_val/pred/fp_probs.pt \
+  --test_score /path/to/test/scores_ranker_score.pt \
+  --test_fp_probs /path/to/test/pred/fp_probs.pt \
+  --out_dir outputs/revision_meta/model
+```
+
+## Uncapped Formula Evaluation
+
+The uncapped PubChem JSON is too large for the dense generic helper builder.
+Prepare packed helpers for the official test fold with the resumable builder:
+
+```bash
+python scripts/prepare_uncapped_formula_test.py \
+  --source_json /data/home/mira/data/msuq/massspecgym_118m_mira.json \
+  --dataset_tsv /data/home/mira/data/msuq/MassSpecGym.tsv \
+  --output_dir /data/home/mira/data/msuq \
+  --workers 16
+```
+
+The script rewrites canonical query keys to the original TSV SMILES, preserves
+candidate order, stores packed 4096-bit fingerprints, and labels candidates by
+2D InChIKey. It intentionally builds test-only helpers; do not use
+`candidate_setting: formula_uncapped` for training with these files.
+
+After helper generation, evaluate both existing formula-trained ensembles and
+then run fixed-split SGR:
+
+```bash
+python scripts/run_evaluation.py \
+  --config config/eval_uncapped_formula.yml \
+  --group ensemble
+
+python scripts/run_sgr_evaluation.py \
+  --config config/sgr_uncapped_formula.yml \
+  --group ensemble
+```
+
+Both configs use `T_eval=0.003`, fresh score directories, and
+`label_mode: inchikey_fallback`. The fingerprint fallback handles one audited
+TSV/InChIKey inconsistency in the test fold.
+
 ## Scoring Functions
 
 The framework compares the following scoring functions for selective prediction:
@@ -207,6 +367,7 @@ The framework compares the following scoring functions for selective prediction:
 | Score gap | Retrieval | 1st | Difference between top-1 and top-2 aggregated scores |
 | Margin | Retrieval | 1st | Difference between top-1 and top-2 probabilities |
 | Retrieval entropy (A/E/T) | Retrieval | 2nd | Entropy decomposition over candidate distributions |
+| Normalized entropy | Retrieval | 2nd | Candidate entropy divided by `log |C|` |
 | Rank variance | Retrieval | 2nd | Variance of candidate ranks across posterior samples |
 | Bitwise entropy (A/E/T) | Fingerprint | 2nd | Entropy decomposition over predicted fingerprint bits |
 | k-NN distance | Input | 1st | Deep k-nearest-neighbor distance |

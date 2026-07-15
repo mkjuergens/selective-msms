@@ -154,7 +154,13 @@ def main():
     p.add_argument("--try_harder", type=boolean, default=False)
 
     p.add_argument("--architecture", choices=["mlp", "transformer"], default="mlp")
-    p.add_argument("--candidate_setting", choices=["formula", "mass"], default="formula")
+    p.add_argument("--candidate_setting", choices=["formula", "mass", "formula_uncapped"], default="formula")
+    p.add_argument(
+        "--label_mode",
+        choices=["fingerprint", "inchikey", "inchikey_fallback"],
+        default="fingerprint",
+        help="Forwarded to train.py; inchikey is recommended for mass candidate helpers.",
+    )
     p.add_argument("--bin_width", type=float, default=0.1)
     p.add_argument("--max_mz", type=float, default=1005.0)
     p.add_argument("--batch_size", type=int, default=128)
@@ -188,7 +194,7 @@ def main():
 
     p.add_argument("--fpwise_iou_jml_v", type=boolean, default=False)
 
-    p.add_argument("--rankwise_temp", type=float, default=1.0)
+    p.add_argument("--rankwise_temp", type=float, default=0.003)
     p.add_argument("--rankwise_dropout", type=float, default=0.2)
     p.add_argument("--rankwise_sim_func", type=str, default="cossim")
     p.add_argument("--rankwise_projector", type=boolean, default=False)
@@ -242,6 +248,7 @@ def main():
         "args_forwarded": {
             "architecture": args.architecture,
             "candidate_setting": args.candidate_setting,
+            "label_mode": args.label_mode,
             "bin_width": args.bin_width,
             "max_mz": args.max_mz,
             "batch_size": args.batch_size,
@@ -297,6 +304,7 @@ def main():
                 f"--try_harder={args.try_harder}",
                 f"--architecture={args.architecture}",
                 f"--candidate_setting={args.candidate_setting}",
+                f"--label_mode={args.label_mode}",
                 f"--bin_width={args.bin_width}",
                 f"--max_mz={args.max_mz}",
                 f"--batch_size={args.batch_size}",
@@ -385,6 +393,7 @@ def main():
         f"--try_harder={args.try_harder}",
         f"--architecture={args.architecture}",
         f"--candidate_setting={args.candidate_setting}",
+        f"--label_mode={args.label_mode}",
         f"--bin_width={args.bin_width}",
         f"--max_mz={args.max_mz}",
         f"--batch_size={args.batch_size}",

@@ -13,7 +13,11 @@ from ms_uq.utils import load_predictions, load_ground_truth, make_test_loader, i
 from ms_uq.inference.retrieve import scores_from_loader
 from ms_uq.inference import load_ranker
 from ms_uq.evaluation import hit_at_k_ragged, compute_fingerprint_losses
-from ms_uq.evaluation.selective_risk import fit_sgr
+from ms_uq.evaluation.selective_risk import (
+    SelectiveGuaranteedRisk,
+    attach_eval_result,
+    make_cal_eval_split,
+)
 from ms_uq.evaluation.visualisation import plot_sgr_coverage_combined, plot_sgr_risk_calibration
 from ms_uq.unc_measures.eval_measures import compute_uncertainties, RETRIEVAL_MEASURES, FINGERPRINT_MEASURES
 
@@ -30,10 +34,17 @@ class SGRConfig:
     max_mz: float = 1005.0
     n_peaks: int = 128
     prec_mz_intensity: float = 1.1
+    label_mode: str = "fingerprint"
+    query_identity_source: str = "precomputed"
+    missing_target_policy: str = "error"
     delta: float = 0.005
+    split_seed: int = 42
+    cal_fraction: float = 0.5
 
     # Ranker support (for ranking-loss models)
     ranker_path: str = ""  # path to ranker.pt; if empty, looks in pred_dir
+    score_dir: str = ""  # optional directory containing cached scores_* files
+    uncertainty_dir: str = ""  # optional directory containing uncertainties_{aggregation}.npz
 
     retrieval_losses: List[str] = field(default_factory=lambda: ["hit@1", "hit@5", "hit@20"])
     retrieval_target_risks: List[float] = field(default_factory=lambda: [0.10, 0.15, 0.20, 0.25, 0.30, 0.40, 0.50])
@@ -49,7 +60,7 @@ class SGRConfig:
 
     metric: str = "cosine"
     aggregation: str = "score"
-    temperature: float = 1.0
+    temperature: float = 0.003
     device: str = "cuda:0"
     batch_size: int = 256
     num_workers: int = 2
@@ -65,7 +76,20 @@ def _loader_kwargs(config: SGRConfig) -> Dict:
         "max_mz": config.max_mz,
         "n_peaks": config.n_peaks,
         "prec_mz_intensity": config.prec_mz_intensity,
+        "label_mode": config.label_mode,
+        "query_identity_source": config.query_identity_source,
+        "missing_target_policy": config.missing_target_policy,
     }
+
+
+def _temperature_tag(temperature: float) -> str:
+    return f"T{float(temperature):g}".replace("-", "m").replace(".", "p")
+
+
+def _score_cache_name(prefix: str, aggregation: str, temperature: float) -> str:
+    if aggregation == "probability":
+        return f"scores_{prefix}_{aggregation}_{_temperature_tag(temperature)}.pt"
+    return f"scores_{prefix}_{aggregation}.pt"
 
 
 def _find_ranker(pred_dir: Path, config: SGRConfig) -> Optional[torch.nn.Module]:
@@ -101,12 +125,16 @@ def load_data(pred_dir: Path, out_dir: Path, config: SGRConfig, loader=None):
     # Try loading ranker (needed for ranking-loss models)
     ranker = _find_ranker(pred_dir, config)
     score_prefix = "ranker" if ranker else config.metric
-    scores_file = out_dir / f"scores_{score_prefix}_{config.aggregation}.pt"
+    scores_file = out_dir / _score_cache_name(score_prefix, config.aggregation, config.temperature)
 
     # Also check if run_evaluation.py cached scores in a different location
     if not scores_file.exists() and not config.overwrite:
         # Check pred_dir and common parent directories
-        for alt_dir in [pred_dir, pred_dir.parent]:
+        alt_dirs = []
+        if config.score_dir:
+            alt_dirs.append(Path(config.score_dir))
+        alt_dirs.extend([pred_dir, pred_dir.parent])
+        for alt_dir in alt_dirs:
             alt = alt_dir / scores_file.name
             if alt.exists():
                 scores_file = alt
@@ -156,6 +184,22 @@ def compute_losses(Pbits, scores_flat, ptr, labels_flat, y_bits, config: SGRConf
     return losses
 
 
+def load_cached_uncertainties(config: SGRConfig, out_dir: Path):
+    search_dirs = []
+    if config.uncertainty_dir:
+        search_dirs.append(Path(config.uncertainty_dir))
+    if config.score_dir:
+        search_dirs.append(Path(config.score_dir))
+    search_dirs.append(out_dir)
+    for directory in search_dirs:
+        path = directory / f"uncertainties_{config.aggregation}.npz"
+        if path.exists() and not config.overwrite:
+            data = np.load(path)
+            print(f"  Loading cached uncertainties: {path}")
+            return {key: data[key] for key in data.files}
+    return None
+
+
 def compute_all_uncertainties(Pbits, scores_stack, scores_flat, ptr, config: SGRConfig):
     """Compute uncertainty measures."""
     ret_measures = config.retrieval_measures or list(RETRIEVAL_MEASURES)
@@ -175,33 +219,21 @@ def compute_all_uncertainties(Pbits, scores_stack, scores_flat, ptr, config: SGR
 
 
 def run_sgr_for_losses(losses: Dict, uncertainties: Dict, measures: List[str],
-                       target_risks_map: Dict, delta: float, binary_loss: bool = True) -> Dict:
+                       target_risks_map: Dict, delta: float, binary_loss: bool = True,
+                       cal_idx: Optional[np.ndarray] = None,
+                       eval_idx: Optional[np.ndarray] = None) -> Dict:
     """
-    Run SGR for a set of losses. Returns results dict compatible with plotting functions.
+    Run SGR for a set of losses using the paper's calibration/evaluation split.
 
-    Parameters
-    ----------
-    losses : dict
-        Mapping loss_name -> loss array.
-    uncertainties : dict
-        Mapping measure_name -> uncertainty scores.
-    measures : list
-        Which measures to evaluate.
-    target_risks_map : dict
-        Mapping loss_name -> list of target risk values.
-    delta : float
-        Confidence parameter for SGR.
-    binary_loss : bool
-        If True, use binomial bounds (for hit@k). If False, use Hoeffding (for fingerprint).
-
-    Returns
-    -------
-    dict
-        Results in format expected by plotting functions.
+    Thresholds are fitted on ``cal_idx`` and evaluated on ``eval_idx``.  The
+    returned SGRResult objects keep calibration fields in their original
+    attributes and attach held-out ``eval_*`` fields for reporting/plotting.
     """
+    use_split = cal_idx is not None and eval_idx is not None
     results = {}
 
     for loss_name, loss_vals in losses.items():
+        loss_vals = np.asarray(loss_vals)
         target_risks = target_risks_map.get(loss_name, target_risks_map.get("default", [0.1, 0.2, 0.3]))
         results[loss_name] = {"sgr": {}, "aurcs": {}, "base_error": float(loss_vals.mean()), "target_risks": target_risks}
 
@@ -209,26 +241,32 @@ def run_sgr_for_losses(losses: Dict, uncertainties: Dict, measures: List[str],
             if measure not in uncertainties:
                 continue
 
-            unc = uncertainties[measure]
+            unc = np.asarray(uncertainties[measure])
             is_conf = is_confidence_score(measure)
             conf = unc if is_conf else -unc
 
-            # AURC
+            # AURC on the full evaluated set, matching the submitted-paper pipeline.
             idx = np.argsort(-conf)
             cumsum = np.cumsum(loss_vals[idx])
             counts = np.arange(1, len(loss_vals) + 1)
             risks, coverages = cumsum / counts, counts / len(loss_vals)
-            results[loss_name]["aurcs"][measure] = float(np.trapezoid(risks, coverages) if hasattr(np, 'trapezoid') else np.trapz(risks, coverages))
+            results[loss_name]["aurcs"][measure] = float(
+                np.trapezoid(risks, coverages) if hasattr(np, "trapezoid") else np.trapz(risks, coverages)
+            )
 
-            # SGR
+            cal_conf = conf[cal_idx] if use_split else conf
+            cal_loss = loss_vals[cal_idx] if use_split else loss_vals
+            eval_conf = conf[eval_idx] if use_split else conf
+            eval_loss = loss_vals[eval_idx] if use_split else loss_vals
+
             results[loss_name]["sgr"][measure] = {}
             for r_star in target_risks:
-                results[loss_name]["sgr"][measure][r_star] = fit_sgr(
-                    conf, loss_vals, r_star, delta, higher_is_confident=True, binary_loss=binary_loss
-                )
+                sgr = SelectiveGuaranteedRisk(higher_is_confident=True, binary_loss=binary_loss)
+                result = sgr.fit(cal_conf, cal_loss, r_star, delta)
+                attach_eval_result(sgr, result, eval_conf, eval_loss)
+                results[loss_name]["sgr"][measure][r_star] = result
 
     return results
-
 
 def run_sgr_evaluation(pred_dir: Path, out_dir: Path, config: SGRConfig,
                        gt_path: Optional[Path] = None, loader=None, label: str = "") -> Dict:
@@ -253,18 +291,36 @@ def run_sgr_evaluation(pred_dir: Path, out_dir: Path, config: SGRConfig,
 
     # Compute
     all_losses = compute_losses(Pbits, scores_flat, ptr, labels_flat, y_bits, config)
-    uncertainties, ret_measures, fp_measures = compute_all_uncertainties(Pbits, scores_stack, scores_flat, ptr, config)
+    ret_measures = config.retrieval_measures or list(RETRIEVAL_MEASURES)
+    for loss in config.retrieval_losses:
+        if loss.startswith("hit@"):
+            rk = f"rank_var_{int(loss.split('@')[1])}"
+            if rk not in ret_measures:
+                ret_measures.append(rk)
+    fp_measures = config.fingerprint_measures or list(FINGERPRINT_MEASURES)
+    uncertainties = load_cached_uncertainties(config, out_dir)
+    if uncertainties is None:
+        uncertainties, ret_measures, fp_measures = compute_all_uncertainties(Pbits, scores_stack, scores_flat, ptr, config)
 
     retrieval_losses = {k: v for k, v in all_losses.items() if k.startswith("hit@")}
     fingerprint_losses = {k: v for k, v in all_losses.items() if k in config.fingerprint_losses}
 
-    print(f"  Samples: {Pbits.shape[0]}")
+    n_samples = len(next(iter(all_losses.values())))
+    cal_idx, eval_idx = make_cal_eval_split(n_samples, config.cal_fraction, config.split_seed)
+
+    print(f"  Samples: {n_samples} total ({len(cal_idx)} cal / {len(eval_idx)} eval)")
     print(f"  Retrieval: {list(retrieval_losses.keys())} | Fingerprint: {list(fingerprint_losses.keys())}")
 
     # Run SGR
     retrieval_risks = {loss: config.retrieval_target_risks for loss in retrieval_losses}
-    retrieval_results = run_sgr_for_losses(retrieval_losses, uncertainties, ret_measures, retrieval_risks, config.delta, binary_loss=True)
-    fingerprint_results = run_sgr_for_losses(fingerprint_losses, uncertainties, fp_measures, config.fingerprint_target_risks, config.delta, binary_loss=False)
+    retrieval_results = run_sgr_for_losses(
+        retrieval_losses, uncertainties, ret_measures, retrieval_risks,
+        config.delta, binary_loss=True, cal_idx=cal_idx, eval_idx=eval_idx,
+    )
+    fingerprint_results = run_sgr_for_losses(
+        fingerprint_losses, uncertainties, fp_measures, config.fingerprint_target_risks,
+        config.delta, binary_loss=False, cal_idx=cal_idx, eval_idx=eval_idx,
+    )
 
     # Print summary
     for name, results in [("Retrieval", retrieval_results), ("Fingerprint", fingerprint_results)]:
@@ -301,7 +357,13 @@ def run_sgr_evaluation(pred_dir: Path, out_dir: Path, config: SGRConfig,
             for measure, sgr_dict in data["sgr"].items():
                 for r_star, r in sgr_dict.items():
                     rows.append({"category": cat, "loss": loss, "measure": measure, "target_risk": r_star,
-                                 "coverage": r.coverage, "empirical_risk": r.empirical_risk, "feasible": r.feasible,
+                                 "cal_coverage": r.coverage,
+                                 "cal_empirical_risk": r.empirical_risk,
+                                 "cal_risk_bound": r.risk_bound,
+                                 "eval_coverage": r.eval_coverage,
+                                 "eval_empirical_risk": r.eval_empirical_risk,
+                                 "eval_n_selected": r.eval_n_selected,
+                                 "feasible": r.feasible,
                                  "aurc": data["aurcs"].get(measure, np.nan)})
     pd.DataFrame(rows).to_csv(out_dir / "sgr_results.csv", index=False)
 
@@ -329,8 +391,19 @@ def run_from_config(config_path: Path, group: str):
             max_mz=model_cfg.get("max_mz", common.get("max_mz", 1005.0)),
             n_peaks=model_cfg.get("n_peaks", common.get("n_peaks", 128)),
             prec_mz_intensity=model_cfg.get("prec_mz_intensity", common.get("prec_mz_intensity", 1.1)),
+            label_mode=model_cfg.get("label_mode", common.get("label_mode", "fingerprint")),
+            query_identity_source=model_cfg.get(
+                "query_identity_source", common.get("query_identity_source", "precomputed")
+            ),
+            missing_target_policy=model_cfg.get(
+                "missing_target_policy", common.get("missing_target_policy", "error")
+            ),
             delta=sgr_cfg.get("delta", 0.005),
+            split_seed=sgr_cfg.get("split_seed", 42),
+            cal_fraction=sgr_cfg.get("cal_fraction", 0.5),
             ranker_path=model_cfg.get("ranker_path", ""),
+            score_dir=model_cfg.get("score_dir", common.get("score_dir", "")),
+            uncertainty_dir=model_cfg.get("uncertainty_dir", common.get("uncertainty_dir", "")),
             retrieval_losses=sgr_cfg.get("retrieval_losses", ["hit@1", "hit@5", "hit@20"]),
             retrieval_target_risks=sgr_cfg.get("retrieval_target_risks", [0.1, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5]),
             retrieval_measures=sgr_cfg.get("retrieval_measures"),
@@ -339,7 +412,7 @@ def run_from_config(config_path: Path, group: str):
             fingerprint_measures=sgr_cfg.get("fingerprint_measures"),
             metric=common.get("metric", "cosine"),
             aggregation=model_cfg.get("aggregation", common.get("aggregation", "score")),
-            temperature=common.get("temperature", 1.0),
+            temperature=common.get("temperature", 0.003),
             device=common.get("device", "cuda:0"),
             batch_size=common.get("batch_size", 256),
             num_workers=common.get("num_workers", 2),

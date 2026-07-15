@@ -18,7 +18,14 @@ from massspecgym.data.data_module import MassSpecDataModule
 from ms_uq.models.registry import normalize_architecture
 
 
-CANDIDATE_SETTINGS = ("formula", "mass")
+CANDIDATE_SETTINGS = (
+    "formula",
+    "mass",
+    "formula_uncapped",
+    "formula_pubchem_capped256",
+    "formula_pubchem_record_capped256",
+    "formula_pubchem_natural_capped256",
+)
 
 
 def normalize_candidate_setting(candidate_setting: str | None) -> str:
@@ -117,6 +124,10 @@ def create_dataset(
     candidate_setting: str = "formula",
     n_peaks: int = 128,
     prec_mz_intensity: Optional[float] = 1.1,
+    label_mode: str = "fingerprint",
+    query_identity_source: str = "precomputed",
+    missing_target_policy: str = "error",
+    lazy_candidate_helpers: bool = False,
 ) -> RetrievalDataset_PrecompFPandInchi:
     """Create retrieval dataset with precomputed fingerprints and candidates."""
     helper_dir = Path(helper_dir)
@@ -139,6 +150,10 @@ def create_dataset(
         candidates_pth=candidates_pth,
         candidates_fp_pth=candidates_fp_pth,
         candidates_inchi_pth=candidates_inchi_pth,
+        label_mode=label_mode,
+        query_identity_source=query_identity_source,
+        missing_target_policy=missing_target_policy,
+        lazy_candidate_helpers=lazy_candidate_helpers,
     )
 
 def _worker_init_fn(worker_id: int):
@@ -170,6 +185,10 @@ def make_test_loader(
     max_mz: float = 1005.0,
     n_peaks: int = 128,
     prec_mz_intensity: Optional[float] = 1.1,
+    label_mode: str = "fingerprint",
+    query_identity_source: str = "precomputed",
+    missing_target_policy: str = "error",
+    lazy_candidate_helpers: bool = False,
 ) -> DataLoader:
     """
     Create test dataloader with memory-efficient and DETERMINISTIC settings.
@@ -185,6 +204,10 @@ def make_test_loader(
         max_mz=max_mz,
         n_peaks=n_peaks,
         prec_mz_intensity=prec_mz_intensity,
+        label_mode=label_mode,
+        query_identity_source=query_identity_source,
+        missing_target_policy=missing_target_policy,
+        lazy_candidate_helpers=lazy_candidate_helpers,
     )
     dm = MassSpecDataModule(dataset=ds, batch_size=batch_size, num_workers=num_workers)
     dm.prepare_data()
@@ -226,6 +249,10 @@ def make_train_val_test_loaders(
     max_mz: float = 1005.0,
     n_peaks: int = 128,
     prec_mz_intensity: Optional[float] = 1.1,
+    label_mode: str = "fingerprint",
+    query_identity_source: str = "precomputed",
+    missing_target_policy: str = "error",
+    lazy_candidate_helpers: bool = False,
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     """Create train/val/test loaders for methods requiring fitting."""
     ds = create_dataset(
@@ -235,6 +262,10 @@ def make_train_val_test_loaders(
         max_mz=max_mz,
         n_peaks=n_peaks,
         prec_mz_intensity=prec_mz_intensity,
+        label_mode=label_mode,
+        query_identity_source=query_identity_source,
+        missing_target_policy=missing_target_policy,
+        lazy_candidate_helpers=lazy_candidate_helpers,
     )
     dm = MassSpecDataModule(dataset=ds, batch_size=batch_size, num_workers=num_workers)
     dm.prepare_data()
@@ -443,7 +474,7 @@ def save_tensor(tensor: Tensor, path: Union[str, Path]):
 
 
 # Confidence score detection keywords (shared across modules)
-CONFIDENCE_KEYWORDS = ["prob", "margin", "confidence", "sim", "top1", "topk", "score_gap", "gap"]
+CONFIDENCE_KEYWORDS = ["prob", "margin", "confidence", "sim", "top1", "topk", "score_gap", "gap", "meta", "top_score", "s1"]
 UNCERTAINTY_KEYWORDS = ["entropy", "epistemic", "aleatoric", "total", "var", "unc"]
 
 

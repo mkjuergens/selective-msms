@@ -30,6 +30,7 @@ class RetrievalUncertainty(BaseUncertainty):
        - entropy_total: H[E[p]] - entropy of mean probabilities
        - entropy_aleatoric: E[H[p]] - expected entropy per sample
        - entropy_epistemic: total - aleatoric (mutual information)
+       - normalized_entropy: H[E[p]] / log(n_candidates)
     
     2. **Rank-based** (disagreement in rankings):
        - rank_var_k: Var[rank of aggregated top-k candidates across samples]
@@ -56,7 +57,7 @@ class RetrievalUncertainty(BaseUncertainty):
     
     def __init__(
         self,
-        temperature: float = 1.0,
+        temperature: float = 0.003,
         normalize_entropy: bool = False,
         top_k_list: Optional[List[int]] = None,
     ):
@@ -115,6 +116,7 @@ class RetrievalUncertainty(BaseUncertainty):
             "entropy_total": np.zeros(N, dtype=np.float32),
             "entropy_aleatoric": np.zeros(N, dtype=np.float32),
             "entropy_epistemic": np.zeros(N, dtype=np.float32),
+            "normalized_entropy": np.zeros(N, dtype=np.float32),
             # Confidence
             "margin": np.zeros(N, dtype=np.float32),
             "score_gap": np.zeros(N, dtype=np.float32),
@@ -148,6 +150,7 @@ class RetrievalUncertainty(BaseUncertainty):
                 results["margin"][i] = 1.0
                 results["score_gap"][i] = 1.0
                 results["ambiguity_ratio"][i] = 0.0
+                results["normalized_entropy"][i] = 0.0
                 continue
             
             # Extract scores for this query
@@ -170,6 +173,7 @@ class RetrievalUncertainty(BaseUncertainty):
             
             # Epistemic: I(Y; θ) = H[E[p]] - E[H[p]]
             H_epistemic = (H_total - H_aleatoric).clamp_min(0)
+            H_normalized = H_total / np.log(float(n_cand)) if n_cand > 1 else H_total.new_tensor(0.0)
             
             if self.normalize_entropy and n_cand > 1:
                 log_C = np.log(float(n_cand))
@@ -180,6 +184,7 @@ class RetrievalUncertainty(BaseUncertainty):
             results["entropy_total"][i] = H_total.item()
             results["entropy_aleatoric"][i] = H_aleatoric.item()
             results["entropy_epistemic"][i] = H_epistemic.item()
+            results["normalized_entropy"][i] = H_normalized.item()
             
             # === 2. Rank-based disagreement ===
             # Get rankings from each sample

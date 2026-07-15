@@ -199,7 +199,7 @@ def save_scores(
     dl: DataLoader,
     metric: str = "cosine",
     aggregation: str = "score",
-    temperature: float = 1.0,
+    temperature: float = 0.003,
     overwrite: bool = False,
     ranker_path: Optional[Path] = None,
     device: str = "cpu",
@@ -343,7 +343,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--aggregation", choices=["score", "fingerprint", "probability"], default="score",
                     help="Ensemble aggregation: 'score' (avg scores), 'fingerprint' (avg FPs), "
                          "'probability' (avg softmax probs, uses --temperature)")
-    ap.add_argument("--temperature", type=float, default=1.0,
+    ap.add_argument("--temperature", type=float, default=0.003,
                     help="Softmax temperature for 'probability' aggregation. "
                          "Lower = sharper (more confident), higher = softer.")
     ap.add_argument("--overwrite", action="store_true")

@@ -27,6 +27,7 @@ RETRIEVAL_MEASURES = {
     "retrieval_epistemic",
     "retrieval_aleatoric",
     "retrieval_total",
+    "normalized_entropy",
     "rank_var_1",
     "rank_var_5",
     "rank_var_20",
@@ -48,6 +49,7 @@ DISTANCE_MEASURES = {
 def compute_fingerprint_uncertainties(
     Pbits: Tensor,
     measures: Optional[List[str]] = None,
+    batch_size: Optional[int] = None,
 ) -> Dict[str, np.ndarray]:
     """Compute fingerprint-level uncertainty measures."""
     if Pbits.dim() == 2:
@@ -65,7 +67,17 @@ def compute_fingerprint_uncertainties(
     
     if any(m in measures for m in ["bitwise_epistemic", "bitwise_aleatoric", "bitwise_total"]):
         bitwise = BitwiseUncertainty(aggregate="sum", kind="entropy", weighting="none")
-        unc = bitwise.forward(Pbits)
+        if batch_size is not None and N > batch_size:
+            parts = [
+                bitwise.forward(Pbits[start:start + batch_size].float())
+                for start in range(0, N, batch_size)
+            ]
+            unc = {
+                name: torch.cat([part[name] for part in parts], dim=0)
+                for name in parts[0]
+            }
+        else:
+            unc = bitwise.forward(Pbits.float())
         
         if "bitwise_epistemic" in measures:
             results["bitwise_epistemic"] = unc["epistemic"].cpu().numpy()
@@ -92,7 +104,7 @@ def compute_retrieval_uncertainties(
     ptr: Tensor,
     scores_agg: Optional[Tensor] = None,
     measures: Optional[List[str]] = None,
-    temperature: float = 1.0,
+    temperature: float = 0.003,
     negate_confidence: bool = True,
 ) -> Dict[str, np.ndarray]:
     """Compute retrieval-level uncertainty measures."""
@@ -128,6 +140,8 @@ def compute_retrieval_uncertainties(
         results["retrieval_aleatoric"] = unc["entropy_aleatoric"].cpu().numpy()
     if "retrieval_total" in measures:
         results["retrieval_total"] = unc["entropy_total"].cpu().numpy()
+    if "normalized_entropy" in measures:
+        results["normalized_entropy"] = unc["normalized_entropy"].cpu().numpy()
     
     for k in rank_k_values:
         key = f"rank_var_{k}"
@@ -256,7 +270,7 @@ def compute_uncertainties(
     distance_measures: Optional[List[str]] = None,
     distance_model: Optional[DistanceUncertainty] = None,
     test_embeddings: Optional[Tensor] = None,
-    temperature: float = 1.0,
+    temperature: float = 0.003,
     negate_confidence: bool = True,
 ) -> Dict[str, np.ndarray]:
     """

@@ -26,7 +26,7 @@ def rejection_curve(loss: torch.Tensor, u: torch.Tensor, monotone=False):
     loss = loss.float().clone()
     u = u.float().clone()
     N = loss.numel() # total number of instances
-    idx = torch.argsort(u, descending=True) # sort by descending uncertainty
+    idx = torch.argsort(u, descending=True, stable=True) # deterministic tie handling
     A = loss[idx]
     tail_sum = torch.cumsum(A.flip(0), 0).flip(0)
     kept = tail_sum / torch.arange(N, 0, -1, dtype=torch.float32)
@@ -38,40 +38,17 @@ def rejection_curve(loss: torch.Tensor, u: torch.Tensor, monotone=False):
 
 
 def aurc_from_curve(rej_pct: torch.Tensor, kept_loss: torch.Tensor) -> float:
-    """
-    Compute Area Under the Risk-Coverage curve (AURC).
-    
-    The curve plots mean loss (y-axis) vs. coverage (x-axis), where coverage = 1 - rejection%.
-    Lower AURC = better (model maintains low loss across coverage levels).
-    
-    Parameters
-    ----------
-    rej_pct : torch.Tensor, shape (N,)
-        Rejection percentages from 0% to ~100%, as returned by rejection_curve.
-    kept_loss : torch.Tensor, shape (N,)
-        Mean loss on kept (non-rejected) samples at each rejection level.
-    
-    Returns
-    -------
-    aurc : float
-        Area under the risk-coverage curve. Lower is better.
-    """
-    # Convert rejection% to coverage (0→100 becomes 100→0)
-    coverage = 100.0 - rej_pct.float()
-    
-    # Sort by increasing coverage for proper integration
-    order = torch.argsort(coverage)
-    cov_sorted = coverage[order]
-    loss_sorted = kept_loss[order].float()
-    
-    # Normalize coverage to [0, 1]
-    cov_norm = cov_sorted / 100.0
-    
-    # Trapezoidal integration
-    aurc = torch.trapz(loss_sorted, cov_norm).item()
-    
-    return aurc  # lower is better
+    """Discrete prefix-average AURC for the empirical risk-coverage step function."""
+    if kept_loss.numel() == 0:
+        raise ValueError("AURC requires at least one risk-coverage point")
+    return float(kept_loss.double().mean().item())
 
+
+def aurc_trapezoid_from_curve(rej_pct: torch.Tensor, kept_loss: torch.Tensor) -> float:
+    """Legacy trapezoidal AURC retained only as an explicitly named diagnostic."""
+    coverage = (100.0 - rej_pct.double()) / 100.0
+    order = torch.argsort(coverage)
+    return float(torch.trapz(kept_loss.double()[order], coverage[order]).item())
 
 
 def compute_oracle_aurc(hits: np.ndarray) -> Tuple[float, np.ndarray, np.ndarray]:
@@ -108,35 +85,13 @@ def compute_oracle_aurc(hits: np.ndarray) -> Tuple[float, np.ndarray, np.ndarray
 
 
 def compute_random_aurc(hits: np.ndarray, seed: int = 42) -> Tuple[float, np.ndarray, np.ndarray]:
-    """
-    Compute random baseline AURC: rejection in random order.
-    
-    Parameters
-    ----------
-    hits : np.ndarray
-        Binary hit indicators (1 = correct, 0 = incorrect).
-    seed : int
-        Random seed for reproducibility.
-    
-    Returns
-    -------
-    aurc : float
-        Random baseline AURC value.
-    rej_pct : np.ndarray
-        Rejection percentages.
-    kept_loss : np.ndarray
-        Mean loss on kept samples.
-    """
-    loss = 1.0 - hits.astype(np.float32)
-    rng = np.random.default_rng(seed)
-    random_uncertainty = rng.random(len(loss)).astype(np.float32)
-    
-    rej_pct, kept_loss = rejection_curve(
-        torch.tensor(loss, dtype=torch.float32),
-        torch.tensor(random_uncertainty, dtype=torch.float32)
-    )
-    aurc = aurc_from_curve(rej_pct, kept_loss)
-    return aurc, rej_pct.numpy(), kept_loss.numpy()
+    """Analytic expected random AURC, equal to the base error."""
+    del seed
+    loss = 1.0 - hits.astype(np.float64)
+    n = len(loss)
+    rej_pct = np.arange(n, dtype=np.float64) / max(n, 1) * 100.0
+    kept_loss = np.full(n, loss.mean(dtype=np.float64), dtype=np.float64)
+    return float(loss.mean(dtype=np.float64)), rej_pct, kept_loss
 
 
 def compute_aurc_with_baselines(

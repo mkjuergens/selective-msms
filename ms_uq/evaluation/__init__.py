@@ -1,6 +1,7 @@
 from ms_uq.evaluation.rejection_curve import (
     rejection_curve,
     aurc_from_curve,
+    aurc_trapezoid_from_curve,
     compute_oracle_aurc,
     compute_random_aurc,
 )
@@ -41,12 +42,15 @@ from ms_uq.evaluation.selective_risk import (
     sgr_risk_coverage_table,
     compute_binomial_bound,
     compute_hoeffding_bound,
+    make_cal_eval_split,
+    attach_eval_result,
 )
 
 __all__ = [
     # Rejection curves
     "rejection_curve",
     "aurc_from_curve",
+    "aurc_trapezoid_from_curve",
     "compute_oracle_aurc",
     "compute_random_aurc",
     # Metrics
@@ -81,4 +85,6 @@ __all__ = [
     "sgr_risk_coverage_table",
     "compute_binomial_bound",
     "compute_hoeffding_bound",
+    "make_cal_eval_split",
+    "attach_eval_result",
 ]

@@ -42,6 +42,10 @@ class EvalConfig:
     max_mz: float = 1005.0
     n_peaks: int = 128
     prec_mz_intensity: float = 1.1
+    label_mode: str = "fingerprint"
+    query_identity_source: str = "precomputed"
+    missing_target_policy: str = "error"
+    lazy_candidate_helpers: bool = False
     
     mode: str = "ensemble"
     ckpt: str = ""
@@ -63,7 +67,7 @@ class EvalConfig:
     aggregations: List[str] = field(default_factory=lambda: ["score", "max_score_topk"])
     topk_k: int = 80
     topk_temp: float = 0.1
-    temperature: float = 1.0
+    temperature: float = 0.003
     top_k_hits: List[int] = field(default_factory=lambda: [1, 5, 20])
     weighted_method: str = "entropy"
     
@@ -99,7 +103,21 @@ def _loader_kwargs(config: EvalConfig) -> Dict:
         "max_mz": config.max_mz,
         "n_peaks": config.n_peaks,
         "prec_mz_intensity": config.prec_mz_intensity,
+        "label_mode": config.label_mode,
+        "query_identity_source": config.query_identity_source,
+        "missing_target_policy": config.missing_target_policy,
+        "lazy_candidate_helpers": config.lazy_candidate_helpers,
     }
+
+
+def _temperature_tag(temperature: float) -> str:
+    return f"T{float(temperature):g}".replace("-", "m").replace(".", "p")
+
+
+def score_cache_name(prefix: str, aggregation: str, temperature: float) -> str:
+    if aggregation == "probability":
+        return f"scores_{prefix}_{aggregation}_{_temperature_tag(temperature)}.pt"
+    return f"scores_{prefix}_{aggregation}.pt"
 
 
 def generate_predictions(out_dir: Path, config: EvalConfig, loader: Optional[DataLoader] = None,
@@ -527,7 +545,7 @@ def run_evaluation(pred_dir: Path, out_dir: Path, config: EvalConfig,
     print("\n[scores] Computing scores...")
     scores_paths = {}
     for agg in config.aggregations:
-        fname = f"scores_{'ranker' if ranker else config.metric}_{agg}.pt"
+        fname = score_cache_name("ranker" if ranker else config.metric, agg, config.temperature)
         scores_file = out_dir / fname
         if scores_file.exists() and not config.overwrite:
             print(f"  {agg}: cached")
@@ -729,13 +747,16 @@ def parse_args():
     ap.add_argument("--aggregations", default="score,max_score_topk")
     ap.add_argument("--topk_k", type=int, default=80)
     ap.add_argument("--topk_temp", type=float, default=0.1)
-    ap.add_argument("--temperature", type=float, default=1.0)
+    ap.add_argument("--temperature", type=float, default=0.003)
     ap.add_argument("--top_k_hits", default="1,5,20")
     ap.add_argument("--batch_size", type=int, default=256)
     ap.add_argument("--num_workers", type=int, default=2)
     ap.add_argument("--bin_width", type=float, default=0.1)
     ap.add_argument("--architecture", choices=["mlp", "transformer"], default="mlp")
-    ap.add_argument("--candidate_setting", choices=["formula", "mass"], default="formula")
+    ap.add_argument("--candidate_setting", choices=["formula", "mass", "formula_uncapped"], default="formula")
+    ap.add_argument("--label_mode", choices=["fingerprint", "inchikey", "inchikey_fallback"], default="fingerprint")
+    ap.add_argument("--query_identity_source", choices=["precomputed", "tsv"], default="precomputed")
+    ap.add_argument("--missing_target_policy", choices=["error", "allow"], default="error")
     ap.add_argument("--max_mz", type=float, default=1005.0)
     ap.add_argument("--n_peaks", type=int, default=128)
     ap.add_argument("--prec_mz_intensity", type=float, default=1.1)
@@ -761,6 +782,8 @@ def main():
             top_k_hits=[int(k) for k in args.top_k_hits.split(",")],
             batch_size=args.batch_size, num_workers=args.num_workers, bin_width=args.bin_width,
             architecture=args.architecture, candidate_setting=args.candidate_setting,
+            label_mode=args.label_mode, query_identity_source=args.query_identity_source,
+            missing_target_policy=args.missing_target_policy,
             max_mz=args.max_mz, n_peaks=args.n_peaks,
             prec_mz_intensity=args.prec_mz_intensity,
             test_subset_size=args.test_subset_size,

@@ -178,6 +178,15 @@ class BiencoderRanker(nn.Module):
         if self.has_projector:
             fp_pred = self.projector(fp_pred)
             fp_cand = self.projector(fp_cand)
+
+        if self.sim_func_name == "cossim":
+            # Matrix multiplication is equivalent to expanded pairwise cosine,
+            # but avoids materializing an (N, M, K) tensor for large pools.
+            dtype = torch.promote_types(fp_pred.dtype, fp_cand.dtype)
+            pred_norm = F.normalize(fp_pred.to(dtype=dtype), p=2, dim=-1)
+            cand_norm = F.normalize(fp_cand.to(dtype=dtype), p=2, dim=-1)
+            scores = pred_norm @ cand_norm.T
+            return scores.squeeze(0) if squeeze else scores
         
         # Expand for pairwise computation
         fp_pred_exp = fp_pred.unsqueeze(1).expand(N, M, -1)  # (N, M, K')
@@ -344,7 +353,7 @@ def scores_from_loader(
     loader: Iterator,
     metric: Literal["cosine", "tanimoto", "iou"] = "cosine",
     aggregation: AggregationMethod = "score",
-    temperature: float = 1.0,
+    temperature: float = 0.003,
     topk_k: int = 80,
     topk_temp: float = 0.1,
     return_labels: bool = True,
@@ -352,6 +361,7 @@ def scores_from_loader(
     show_progress: bool = True,
     ranker: Optional[nn.Module] = None,
     device: str = "cpu",
+    score_dtype: torch.dtype = torch.float32,
 ) -> dict:
     """
     Compute candidate scores from a dataloader with integrated aggregation.
@@ -410,14 +420,14 @@ def scores_from_loader(
         def score_fn(fp: Tensor, cands: Tensor) -> Tensor:
             """Score using learned ranker."""
             with torch.no_grad():
-                fp_dev = fp.to(device)
-                cands_dev = cands.to(device)
+                fp_dev = fp.to(device=device, dtype=score_dtype)
+                cands_dev = cands.to(device=device, dtype=score_dtype)
                 scores = ranker(fp_dev, cands_dev)
-                return scores.cpu()
+                return scores.to(dtype=score_dtype).cpu()
     else:
         def score_fn(fp: Tensor, cands: Tensor) -> Tensor:
             """Score using similarity matrix."""
-            return similarity_matrix(fp, cands, metric=metric)
+            return similarity_matrix(fp.to(dtype=score_dtype), cands.to(dtype=score_dtype), metric=metric)
     
     # Pre-compute based on aggregation method
     if aggregation == "fingerprint":
@@ -472,7 +482,7 @@ def scores_from_loader(
                 query_idx += 1
                 continue
             
-            cands = cands.float()
+            cands = cands.to(dtype=score_dtype)
             
             if aggregation == "fingerprint":
                 scores_agg = score_fn(
@@ -551,13 +561,14 @@ def scores_ragged_from_loader(
     loader: Iterator,
     metric: str = "cosine",
     aggregation: AggregationMethod = "score",
-    temperature: float = 1.0,
+    temperature: float = 0.003,
     topk_k: int = 80,
     topk_temp: float = 0.1,
     outfile: Optional[Union[str, Path]] = None,
     return_labels: bool = True,
     ranker: Optional[nn.Module] = None,
     device: str = "cpu",
+    score_dtype: torch.dtype = torch.float32,
 ) -> Union[dict, Path]:
     """
     Compute and optionally save ragged scores with aggregation.
@@ -606,6 +617,7 @@ def scores_ragged_from_loader(
         show_progress=True,
         ranker=ranker,
         device=device,
+        score_dtype=score_dtype,
     )
     
     if outfile is not None:
@@ -616,7 +628,7 @@ def scores_ragged_from_loader(
     return result
 
 
-def ragged_softmax(scores: Tensor, ptr: Tensor, temperature: float = 1.0) -> Tensor:
+def ragged_softmax(scores: Tensor, ptr: Tensor, temperature: float = 0.003) -> Tensor:
     """Apply softmax within each ragged segment."""
     squeeze = scores.dim() == 1
     if squeeze:
