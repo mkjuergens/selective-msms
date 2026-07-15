@@ -1,10 +1,17 @@
-# Selective Prediction for Molecular Retrieval from MS/MS
+# Selective-MSMS
 
-Code and frozen artifacts for selective molecular-structure retrieval from tandem mass spectra. The project evaluates when fingerprint-based retrieval predictions should be accepted or deferred using risk-coverage curves and selective risk control.
+Code and frozen artifacts for **"When Should We Trust the Annotation? Selective Prediction for Molecular Structure Retrieval from Mass Spectra"**.
 
-Paper: [arXiv:2603.10950](https://arxiv.org/abs/2603.10950)
+We introduce a selective-prediction framework for molecular-structure retrieval from tandem mass spectra (MS/MS), enabling models to abstain when uncertainty is high. The experiments evaluate fingerprint-, retrieval-, and representation-level confidence scores using risk-coverage curves and selective risk control on the [MassSpecGym](https://github.com/pluskal-lab/MassSpecGym) benchmark.
 
-Artifacts: [10.5281/zenodo.19108280](https://doi.org/10.5281/zenodo.19108280)
+- **Paper:** [arXiv:2603.10950](https://arxiv.org/abs/2603.10950)
+- **Artifacts:** [10.5281/zenodo.19108280](https://doi.org/10.5281/zenodo.19108280)
+
+## Overview
+
+<p align="center">
+  <img src="docs/figures/figure_1.png" alt="Overview of the selective molecular-retrieval framework" width="700"/>
+</p>
 
 ## Repository Layout
 
@@ -34,6 +41,12 @@ pytest -q
 ```
 
 CUDA is recommended for candidate rescoring and prediction generation. Report-only reproduction and validation run on CPU and do not require MassSpecGym files.
+
+## Data Preparation
+
+Full candidate rescoring uses `RetrievalDataset_PrecompFPandInchi`, adapted from [ms-mole](https://github.com/gdewael/ms-mole), together with precomputed 4096-bit Morgan fingerprints and candidate InChIKeys. Large MassSpecGym data and candidate files are not duplicated in the Zenodo deposit.
+
+The exact external filenames, source locations, sizes, SHA-256 hashes, and preparation instructions are recorded in [`EXTERNAL_DATA.tsv`](EXTERNAL_DATA.tsv). Report-only reproduction from `results.zip` does not require these files.
 
 ## Released Artifacts
 
@@ -134,8 +147,26 @@ python scripts/prepare_release.py verify
 ```
 
 `prepare_release.py` does not download data or retrain models. It verifies all source hashes, materializes `outputs/paper_results`, creates deterministic ZIP64 archives, and rejects external MassSpecGym payloads in the deposit.
+
 After committing source or DOI metadata, `finalize` rebuilds only the small `source.zip`, `README.md`, `MANIFEST.tsv`, and `SHA256SUMS`; it preserves the large scientific payload archives.
+
+## Acknowledgements
+
+The model architecture, dataset pipeline, and ranking-loss implementation build on [ms-mole](https://github.com/gdewael/ms-mole) and its accompanying paper, ["Small molecule retrieval from tandem mass spectrometry: what are we optimizing for?"](https://arxiv.org/abs/2602.16507), by De Waele et al.
+
+This work uses the [MassSpecGym](https://github.com/pluskal-lab/MassSpecGym) benchmark by Bushuiev et al.
+
+## Citation
+
+```bibtex
+@article{jurgens2026should,
+  title   = {When Should We Trust the Annotation? Selective Prediction for Molecular Structure Retrieval from Mass Spectra},
+  author  = {J{\"u}rgens, Mira and De Waele, Gaetan and Rakhshaninejad, Morteza and Waegeman, Willem},
+  journal = {arXiv preprint arXiv:2603.10950},
+  year    = {2026}
+}
+```
 
 ## License
 
-See [LICENSE](LICENSE).
+MIT License. See [LICENSE](LICENSE) for details.
