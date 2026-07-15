@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compile one canonical model/candidate score bundle into query-level revision features."""
+"""Compile one model/candidate score bundle into canonical query-level features."""
 
 from __future__ import annotations
 
@@ -10,14 +10,14 @@ import numpy as np
 import pandas as pd
 import torch
 
-from ms_uq.evaluation.revision_features import target_ranks
-from ms_uq.utils import resolve_candidate_paths
-from scripts.run_meta_score_analysis import (
-    build_features,
-    canonical_views_for_metadata,
-    load_scores,
+from ms_uq.evaluation.confidence_features import (
+    build_deployment_features,
+    candidate_views_for_metadata,
+    load_score_bundle,
     split_metadata,
+    target_ranks,
 )
+from ms_uq.utils import resolve_candidate_paths
 
 
 def compile_query_scores(
@@ -48,10 +48,10 @@ def compile_query_scores(
     feature_convention: str = "canonical",
 ) -> pd.DataFrame:
     metadata = split_metadata(dataset_tsv, split)
-    scores_flat, _, ptr, labels = load_scores(score_path)
+    scores_flat, _, ptr, labels = load_score_bundle(score_path)
     n_queries = ptr.numel() - 1
     metadata = metadata.iloc[:n_queries].copy()
-    features, hits, _ = build_features(
+    features, hits, _ = build_deployment_features(
         score_path, fp_probs_path, metadata, helper_dir, candidate_setting, top_ks,
         temperature, include_cardinality=include_cardinality,
         candidate_record_policy=candidate_record_policy,
@@ -61,7 +61,7 @@ def compile_query_scores(
     )
     _, candidate_fp_path, candidate_inchi_path = resolve_candidate_paths(helper_dir, candidate_setting)
     with np.load(candidate_fp_path) as candidate_fps, np.load(candidate_inchi_path) as candidate_inchis:
-        ids_by_query, _ = canonical_views_for_metadata(
+        ids_by_query, _ = candidate_views_for_metadata(
             candidate_inchis, candidate_fps, metadata, include_fps=False,
             record_policy=candidate_record_policy,
         )

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the complete, resumable canonical revision evaluation without downloading or retraining."""
+"""Run, reproduce reports from, or validate the frozen paper evaluation."""
 
 from __future__ import annotations
 
@@ -22,9 +22,10 @@ import numpy as np
 import pandas as pd
 import torch
 
-from ms_uq.evaluation.revision_candidates import build_record_preserving_formula_cap, normalize_inchikey
-from ms_uq.evaluation.revision_features import peak_count
-from ms_uq.evaluation.revision_reporting import SGR_SINGLE_MEASURES, merge_meta_predictions, run_sgr_stability
+from ms_uq.evaluation.candidate_sets import build_record_preserving_formula_cap, normalize_inchikey
+from ms_uq.evaluation.artifacts import validate_paper_results
+from ms_uq.evaluation.confidence_features import peak_count
+from ms_uq.evaluation.paper_reporting import SGR_SINGLE_MEASURES, merge_meta_predictions, run_sgr_stability
 
 
 STAGES = [
@@ -89,11 +90,12 @@ class ScoreCell:
     query_mask_id: str
 
 
-class RevisionRunner:
+class PaperEvaluationRunner:
     def __init__(self, args):
         self.args = args
         self.repo = Path(__file__).resolve().parents[1]
         self.data = args.data_dir.resolve()
+        self.artifacts = args.artifacts.resolve()
         self.out = args.out_dir.resolve()
         self.python = Path(sys.executable).resolve()
         self.out.mkdir(parents=True, exist_ok=True)
@@ -164,46 +166,60 @@ class RevisionRunner:
         manifests = sorted(root.glob("members/member_*/best_ckpts.json"))
         return tuple(self._manifest_checkpoint(path) for path in manifests)
 
+    def _prediction_view(self, model_id: str, split: str) -> Path:
+        """Expose the shared ranker beside one released prediction without duplicating it."""
+        source_dir = self.artifacts / "models" / model_id / "predictions" / split
+        shared_ranker = self.artifacts / "models/shared/ranker.pt"
+        target = self.out / "input_views" / model_id / split
+        target.mkdir(parents=True, exist_ok=True)
+        for source, name in [(source_dir / "fp_probs.pt", "fp_probs.pt"), (shared_ranker, "ranker.pt")]:
+            if not source.is_file():
+                raise FileNotFoundError(source)
+            link = target / name
+            if not link.exists():
+                link.symlink_to(source)
+        return target
+
     def _model_sources(self) -> Dict[str, ModelSource]:
-        formula_mlp_root = self.data / "logs/ensemble_20251222-1218"
-        mass_mlp_root = self.data / "logs/ensemble_20260709-1541_mass_bienc_T0003_retry"
-        transformer_single = self.repo / "outputs/revision_runs/single_20260706-1138_transformer_single_formula/single/model/best_ckpts.json"
-        transformer_ensemble = self.repo / "outputs/revision_runs/ensemble_20260707-0736_transformer_formula_seeds43_46_gpu2_4"
-        transformer_checkpoints = (self._manifest_checkpoint(transformer_single),) + self._ensemble_checkpoints(transformer_ensemble)
-        mc_dropout_root = self.data / "logs/mc_dropout_20260217-1126"
-        laplace_pred_dir = self.data / "logs/laplace_bce/predictions/bienc"
+        model_root = self.artifacts / "models"
+        checkpoints = {
+            model: tuple(sorted((model_root / model / "checkpoints").glob("*")))
+            for model in [
+                "ensemble_mlp_formula", "ensemble_transformer_formula", "ensemble_mlp_mass",
+                "mc_dropout_mlp_formula", "laplace_mlp_formula",
+            ]
+        }
         models = {
             "mlp_formula": ModelSource(
                 "mlp_formula", "mlp", "formula_official_capped",
-                formula_mlp_root / "predictions", self.repo / "outputs/revision_meta/mlp_val/pred",
-                self._ensemble_checkpoints(formula_mlp_root),
+                self._prediction_view("ensemble_mlp_formula", "test"),
+                self._prediction_view("ensemble_mlp_formula", "validation"),
+                checkpoints["ensemble_mlp_formula"],
             ),
             "transformer_formula": ModelSource(
                 "transformer_formula", "transformer", "formula_official_capped",
-                self.repo / "outputs/revision_analysis/transformer_ensemble_formula/pred",
-                self.repo / "outputs/revision_meta/transformer_val/pred", transformer_checkpoints,
+                self._prediction_view("ensemble_transformer_formula", "test"),
+                self._prediction_view("ensemble_transformer_formula", "validation"),
+                checkpoints["ensemble_transformer_formula"],
             ),
             "mlp_mass": ModelSource(
                 "mlp_mass", "mlp", "mass_existing_capped256",
-                self.repo / "outputs/predictions/mass_mlp_bienc", None,
-                self._ensemble_checkpoints(mass_mlp_root),
+                self._prediction_view("ensemble_mlp_mass", "test"), None,
+                checkpoints["ensemble_mlp_mass"],
             ),
             "mlp_mc_dropout": ModelSource(
                 "mlp_mc_dropout", "mlp", "formula_official_capped",
-                mc_dropout_root / "predictions", None,
-                (self._manifest_checkpoint(mc_dropout_root / "single/model/best_ckpts.json", "cossim"),),
+                self._prediction_view("mc_dropout_mlp_formula", "test"), None,
+                checkpoints["mc_dropout_mlp_formula"],
                 prediction_samples=50,
-                archived_test_score=self.data / "figures/eval_v6/mc_dropout/bienc/scores_ranker_score.pt",
+                archived_test_score=self.artifacts / "results/evaluations/formula_official/mc_dropout_mlp_formula/test/scores.pt",
             ),
             "mlp_laplace": ModelSource(
                 "mlp_laplace", "mlp", "formula_official_capped",
-                laplace_pred_dir, None,
-                (
-                    self.data / "logs/ensemble_20251222-1218/members/member_004/ckpts/cossim/cossim-01-6068.ckpt",
-                    laplace_pred_dir / "laplace_state.pt",
-                ),
+                self._prediction_view("laplace_mlp_formula", "test"), None,
+                checkpoints["laplace_mlp_formula"],
                 prediction_samples=50,
-                archived_test_score=self.data / "figures/eval_v6/laplace/bienc/scores_ranker_score.pt",
+                archived_test_score=self.artifacts / "results/evaluations/formula_official/laplace_mlp_formula/test/scores.pt",
             ),
         }
         for model in models.values():
@@ -313,7 +329,7 @@ class RevisionRunner:
 
     def resolved_config(self) -> dict:
         return {
-            "data_dir": str(self.data), "out_dir": str(self.out), "device": self.args.device,
+            "data_dir": str(self.data), "artifacts": str(self.artifacts), "out_dir": str(self.out), "device": self.args.device,
             "temperature": EVALUATION_TEMPERATURE, "top_ks": TOP_KS, "candidate_seed": 42,
             "candidate_record_policy": "preserve", "candidate_tie_break": "source_order",
             "score_dtype": "float32", "aurc_convention": "manuscript_trapezoid_seed42",
@@ -730,7 +746,7 @@ class RevisionRunner:
             cell_helpers = self.cell_helper_dir(cell)
             pred_dir = model.val_pred_dir if cell.split == "val" else model.test_pred_dir
             command = [
-                self.python, self.repo / "scripts/compile_revision_scores.py",
+                self.python, self.repo / "scripts/compile_paper_scores.py",
                 "--score", self.evaluation_score(cell), "--fp_probs", pred_dir / "fp_probs.pt",
                 "--dataset_tsv", self.data / "MassSpecGym.tsv", "--helper_dir", cell_helpers,
                 "--candidate_setting", cell.helper_setting, "--split", cell.split, "--out", output,
@@ -869,7 +885,7 @@ class RevisionRunner:
         if self.stage_complete("bootstrap", outputs):
             print("[bootstrap] using cached clustered intervals")
             return
-        command = [self.python, self.repo / "scripts/aggregate_revision_results.py"]
+        command = [self.python, self.repo / "scripts/aggregate_paper_results.py"]
         for cell in self.cells:
             command.extend(["--query_score", self.query_score_path(cell)])
         for run_label, output_name, path in self.meta_specs():
@@ -933,30 +949,10 @@ class RevisionRunner:
             print("[tables] using cached table exports")
             return
         canonical = pd.read_csv(self.out / "results/metrics_tidy.csv")
-        crosswalk_rows = []
-        old_specs = [
-            ("mlp_formula", "formula_official_capped", self.repo / "outputs/revision_candidate_comparison/formula_capped/mlp/rel_aurc_retrieval_score.csv"),
-            ("transformer_formula", "formula_official_capped", self.repo / "outputs/revision_candidate_comparison/formula_capped/transformer/rel_aurc_retrieval_score.csv"),
-            ("mlp_formula", "formula_pubchem_uncapped", self.repo / "outputs/revision_uncapped/eval/mlp/rel_aurc_retrieval_score.csv"),
-            ("transformer_formula", "formula_pubchem_uncapped", self.repo / "outputs/revision_uncapped/eval/transformer/rel_aurc_retrieval_score.csv"),
-            ("mlp_mass", "mass_existing_capped256", self.repo / "outputs/mass_mlp_bienc/eval/ensemble/bienc_mass/rel_aurc_retrieval_score.csv"),
-        ]
-        for run_label, setting, path in old_specs:
-            if not path.exists():
-                continue
-            old = pd.read_csv(path, index_col=0)
-            for measure in old.index:
-                for column in old.columns:
-                    if not column.startswith("hit@"):
-                        continue
-                    k = int(column.split("@")[1])
-                    match = canonical[(canonical.run_label == run_label) & (canonical.evaluation_candidate_setting == setting) & (canonical.K == k) & (canonical.measure == measure) & (canonical.metric == "rel_aurc")]
-                    crosswalk_rows.append({
-                        "run_label": run_label, "evaluation_candidate_setting": setting, "K": k,
-                        "measure": measure, "old_source": str(path), "old_value": float(old.loc[measure, column]),
-                        "canonical_value": float(match.value.iloc[0]) if len(match) == 1 else np.nan,
-                    })
-        pd.DataFrame(crosswalk_rows).to_csv(outputs[2], index=False)
+        pd.DataFrame(columns=[
+            "run_label", "evaluation_candidate_setting", "K", "measure",
+            "previous_value", "canonical_value",
+        ]).to_csv(outputs[3], index=False)
         self.mark_stage("tables", outputs)
 
     def report(self) -> None:
@@ -965,8 +961,8 @@ class RevisionRunner:
             print("[report] using cached static report")
             return
         self.run_command("report", "html", [
-            self.python, self.repo / "scripts/build_revision_share_report.py",
-            "--source_dir", self.out, "--out_dir", self.out / "report",
+            self.python, self.repo / "scripts/build_paper_report.py",
+            "--source-dir", self.out, "--out-dir", self.out / "report",
         ])
         self.mark_stage("report", [output])
 
@@ -1071,7 +1067,7 @@ class RevisionRunner:
         report = {"passed": all(row["passed"] for row in checks), "checks": checks, "metrics_sha256": manifest_hash}
         self._atomic_json(output, report)
         if not report["passed"]:
-            raise RuntimeError("Canonical rerun failed acceptance validation")
+            raise RuntimeError("Canonical paper evaluation failed acceptance validation")
         self.mark_stage("validate", [output])
 
     def execute(self) -> None:
@@ -1090,7 +1086,7 @@ class RevisionRunner:
             started = time.time()
             methods[stage]()
             print(f"[{stage}] complete in {(time.time() - started) / 60:.1f} min")
-        print(f"Canonical revision rerun available at {self.out}")
+        print(f"Canonical paper evaluation available at {self.out}")
 
 
 def parse_stages(value: str) -> List[str]:
@@ -1103,10 +1099,10 @@ def parse_stages(value: str) -> List[str]:
     return values
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data-dir", type=Path, default=Path("/data/home/mira/data/msuq"))
-    parser.add_argument("--out-dir", type=Path, default=Path("outputs/revision_rerun_v1"))
+def add_full_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--data-dir", type=Path, default=Path("data"))
+    parser.add_argument("--artifacts", type=Path, default=Path("artifacts"))
+    parser.add_argument("--out-dir", type=Path, default=Path("outputs/paper_run"))
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--stages", type=parse_stages, default=["all"])
     parser.add_argument("--force-stage", action="append", default=[], choices=STAGES)
@@ -1126,12 +1122,63 @@ def main() -> None:
     parser.add_argument("--num-workers", type=int, default=2)
     parser.add_argument("--keep-raw-scores", action="store_true",
                         help="Retain temporary pre-provenance score bundles (roughly doubles score storage)")
+
+
+def _artifact_results(path: Path) -> Path:
+    path = path.resolve()
+    return path / "results" if (path / "results").is_dir() else path
+
+
+def report_from_artifacts(artifacts: Path, output_dir: Path) -> dict:
+    source = _artifact_results(artifacts)
+    report = validate_paper_results(source)
+    if not report["passed"]:
+        raise RuntimeError("Packaged paper results failed validation")
+    output_dir = output_dir.resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for name in ["numerical", "analyses", "figures", "tables", "provenance"]:
+        source_dir = source / name
+        if source_dir.is_dir():
+            shutil.copytree(source_dir, output_dir / name, dirs_exist_ok=True)
+    subprocess.run([
+        sys.executable, str(Path(__file__).with_name("build_paper_report.py")),
+        "--source-dir", str(output_dir), "--out-dir", str(output_dir / "report"),
+    ], check=True)
+    reproduced_hash = hashlib.sha256((output_dir / "numerical/metrics.csv").read_bytes()).hexdigest()
+    return {
+        **report,
+        "report_output": str(output_dir / "report/index.html"),
+        "reproduced_metrics_sha256": reproduced_hash,
+        "reproduced_metrics_equal": reproduced_hash == report["metrics_sha256"],
+    }
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    full = commands.add_parser("full", help="Run all candidate rescoring and paper analyses")
+    add_full_arguments(full)
+    report_parser = commands.add_parser("report", help="Reproduce the report from released results without MassSpecGym data")
+    report_parser.add_argument("--artifacts", type=Path, default=Path("artifacts"))
+    report_parser.add_argument("--output-dir", type=Path, default=Path("outputs/paper_results_reproduced"))
+    validate_parser = commands.add_parser("validate", help="Validate released results without recomputing inference")
+    validate_parser.add_argument("--artifacts", type=Path, default=Path("artifacts"))
     args = parser.parse_args()
+    if args.command == "report":
+        result = report_from_artifacts(args.artifacts, args.output_dir)
+        print(json.dumps(result, indent=2))
+        return
+    if args.command == "validate":
+        result = validate_paper_results(_artifact_results(args.artifacts))
+        print(json.dumps(result, indent=2))
+        if not result["passed"]:
+            raise SystemExit(1)
+        return
     if args.bootstrap_replicates < 0:
         parser.error("--bootstrap-replicates must be non-negative")
     if args.sgr_repeats < 1:
         parser.error("--sgr-repeats must be positive")
-    RevisionRunner(args).execute()
+    PaperEvaluationRunner(args).execute()
 
 
 if __name__ == "__main__":

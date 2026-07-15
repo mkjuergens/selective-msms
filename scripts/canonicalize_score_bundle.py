@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-from ms_uq.evaluation.revision_candidates import canonical_candidate_indices, normalize_inchikey
+from ms_uq.evaluation.candidate_sets import canonical_candidate_indices, normalize_inchikey
 from ms_uq.utils import resolve_candidate_paths
 
 

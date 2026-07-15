@@ -9,7 +9,7 @@ from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
-from ms_uq.evaluation.revision_features import canonical_aurc_table, prefix_risk_curve
+from ms_uq.evaluation.confidence_features import canonical_aurc_table, prefix_risk_curve
 from ms_uq.evaluation.selective_risk import SelectiveGuaranteedRisk, attach_eval_result, make_cal_eval_split
 
 

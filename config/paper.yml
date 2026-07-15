@@ -1,0 +1,98 @@
+paper:
+  title: Selective prediction for reliable molecular structure retrieval from tandem mass spectra
+  url: https://arxiv.org/abs/2603.10950
+  zenodo_doi: null
+
+evaluation:
+  temperature: 0.003
+  aggregation: score_mean
+  similarity: cosine
+  candidate_record_policy: preserve
+  candidate_tie_break: source_order
+  official_test_spectra: 17556
+  official_validation_spectra: 19429
+  top_k: [1, 5, 20]
+  sgr:
+    split_seed: 42
+    calibration_fraction: 0.5
+    delta: 0.001
+    target_risks: [0.1, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5]
+
+models:
+  ensemble_mlp_formula:
+    architecture: mlp
+    training_candidates: formula_official
+    members: 5
+  ensemble_transformer_formula:
+    architecture: transformer
+    training_candidates: formula_official
+    members: 5
+  ensemble_mlp_mass:
+    architecture: mlp
+    training_candidates: mass_capped
+    members: 5
+  mc_dropout_mlp_formula:
+    architecture: mlp
+    training_candidates: formula_official
+    samples: 50
+  laplace_mlp_formula:
+    architecture: mlp
+    training_candidates: formula_official
+    samples: 50
+
+candidate_settings:
+  formula_official:
+    policy: official MassSpecGym records as distributed
+    deduplicated: false
+  formula_paired_capped:
+    policy: deterministic record-level subset of the local uncapped pool, target retained, maximum 256
+    deduplicated: false
+  formula_uncapped:
+    policy: local PubChem formula-matched record pool
+    deduplicated: false
+  mass_capped:
+    policy: existing opaque mass-filtered pool, maximum 256
+    deduplicated: false
+
+external_data:
+  MassSpecGym.tsv:
+    url: https://huggingface.co/datasets/roman-bushuiev/MassSpecGym/tree/main/data
+    preparation: Download the pinned MassSpecGym table and verify its SHA-256 hash.
+  fp_4096.npy:
+    url: https://huggingface.co/datasets/roman-bushuiev/MassSpecGym/tree/main/data
+    preparation: Prepare the 4096-bit Morgan fingerprint lookup using the repository data tools.
+  inchis.npy:
+    url: https://huggingface.co/datasets/roman-bushuiev/MassSpecGym/tree/main/data
+    preparation: Prepare the candidate InChI lookup using the repository data tools.
+  massspecgym_118m_mira.json:
+    url: https://huggingface.co/datasets/roman-bushuiev/MassSpecGym/tree/main/data/molecules/candidate_pools
+    preparation: Use the local formula-matched PubChem pool to build test-only uncapped helpers.
+    note: The local file has no recoverable PubChem snapshot identifier; the recorded SHA-256 hash is authoritative.
+  MassSpecGym_retrieval_candidates_formula.json:
+    url: https://huggingface.co/datasets/roman-bushuiev/MassSpecGym/tree/main/data
+    preparation: Obtain the official formula candidate JSON distributed with MassSpecGym.
+  MassSpecGym_retrieval_candidates_formula_fps.npz:
+    url: https://huggingface.co/datasets/roman-bushuiev/MassSpecGym/tree/main/data
+    preparation: Obtain or generate the official formula candidate fingerprint helper.
+  MassSpecGym_retrieval_candidates_formula_inchi.npz:
+    url: https://huggingface.co/datasets/roman-bushuiev/MassSpecGym/tree/main/data
+    preparation: Obtain or generate the official formula candidate identity helper.
+  MassSpecGym_retrieval_candidates_formula_uncapped.json:
+    url: unknown
+    preparation: Generate with scripts/prepare_uncapped_formula_test.py from massspecgym_118m_mira.json.
+  MassSpecGym_retrieval_candidates_formula_uncapped_fps.npz:
+    url: unknown
+    preparation: Generate with scripts/prepare_uncapped_formula_test.py from massspecgym_118m_mira.json.
+  MassSpecGym_retrieval_candidates_formula_uncapped_inchi.npz:
+    url: unknown
+    preparation: Generate with scripts/prepare_uncapped_formula_test.py from massspecgym_118m_mira.json.
+  MassSpecGym_retrieval_candidates_mass.json:
+    url: unknown
+    preparation: Supply the exact existing mass-filtered candidate pool identified by the recorded hash.
+    note: The mass tolerance, adduct conversion, pre-cap pool, and database snapshot are unavailable.
+  MassSpecGym_retrieval_candidates_mass_fps.npz:
+    url: unknown
+    preparation: Supply the fingerprint helper paired with the exact mass candidate pool.
+  MassSpecGym_retrieval_candidates_mass_inchi.npz:
+    url: unknown
+    preparation: Supply the identity helper paired with the exact mass candidate pool.

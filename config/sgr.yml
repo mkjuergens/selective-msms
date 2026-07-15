@@ -1,4 +1,4 @@
-# Template SGR config. Use sgr_paper_mlp_formula.yml for the archived paper MLP/formula artifacts.
+# Template SGR configuration for custom evaluations.
 # SGR (Selection with Guaranteed Risk) evaluation configuration.
 # Adapt paths under 'common' to your local setup before running.
 

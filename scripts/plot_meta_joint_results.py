@@ -16,7 +16,7 @@ import pandas as pd
 import torch
 
 from ms_uq.evaluation import compute_aurc_table
-from ms_uq.evaluation.revision_features import canonical_aurc_table, hit_arrays
+from ms_uq.evaluation.confidence_features import canonical_aurc_table, hit_arrays
 from ms_uq.evaluation.visualisation import (
     DEFAULT_COLOR_MAP,
     DISPLAY_NAMES,
@@ -77,13 +77,13 @@ MANUSCRIPT_MEASURES = [
 DEFAULT_MODELS = {
     "mlp": {
         "label": "MLP ensemble",
-        "eval_dir": Path("/data/home/mira/data/msuq/figures/eval_v6/ensemble/bienc"),
-        "meta_dir": Path("outputs/revision_meta/mlp_meta"),
+        "eval_dir": Path("artifacts/results/evaluations/formula_official/ensemble_mlp_formula/test"),
+        "meta_dir": Path("artifacts/results/analyses/meta_models/mlp_formula/full"),
     },
     "transformer": {
         "label": "Transformer ensemble",
-        "eval_dir": Path("outputs/revision_analysis/transformer_ensemble_formula"),
-        "meta_dir": Path("outputs/revision_meta/transformer_meta"),
+        "eval_dir": Path("artifacts/results/evaluations/formula_official/ensemble_transformer_formula/test"),
+        "meta_dir": Path("artifacts/results/analyses/meta_models/transformer_formula/full"),
     },
 }
 
@@ -393,8 +393,8 @@ def build_canonical_model(
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--out_dir", type=Path, default=Path("outputs/revision_meta/joint_plots"))
-    ap.add_argument("--query_scores", type=Path, help="Canonical query_scores.parquet from the rerun")
+    ap.add_argument("--out_dir", type=Path, default=Path("outputs/paper_figures/meta"))
+    ap.add_argument("--query_scores", type=Path, help="Canonical paper query_scores.parquet")
     ap.add_argument("--top_ks", type=int, nargs="+", default=DEFAULT_TOP_KS)
     ap.add_argument("--measures", nargs="+", default=DEFAULT_MEASURES)
     ap.add_argument("--mlp_eval_dir", type=Path, default=DEFAULT_MODELS["mlp"]["eval_dir"])

@@ -1,4 +1,4 @@
-# Template risk-coverage config. Use eval_paper_mlp_formula.yml for the archived paper MLP/formula artifacts.
+# Template risk-coverage configuration for custom evaluations.
 common:
   # ── Data paths (adapt to your local setup) ──
   dataset_tsv: data/MassSpecGym.tsv

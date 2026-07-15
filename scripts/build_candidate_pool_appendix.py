@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 from typing import Mapping, Sequence
 
@@ -17,9 +16,8 @@ import numpy as np
 import pandas as pd
 from matplotlib.patches import Patch
 
+from ms_uq.evaluation.candidate_sets import CANDIDATE_CAP as CAP, summarize_candidate_sizes
 from ms_uq.evaluation.visualisation import _FA, _FH, _FL, _FT, _FW, _ROW_H, _setup_ax
-from scripts.build_candidate_comparison_appendix import RESULTS, TOP_KS
-from scripts.plot_candidate_size_distribution import CAP, resolve_sizes, summarize
 
 
 FILL_COLORS = {
@@ -64,7 +62,7 @@ def load_candidate_counts(
         with np.load(path) as candidate_map:
             sizes = np.asarray([len(candidate_map[query]) for query in queries], dtype=np.int64)
         counts[setting] = sizes
-        rows.append(summarize(setting, sizes))
+        rows.append(summarize_candidate_sizes(setting, sizes))
     return pd.DataFrame(rows), pd.DataFrame({"molecule_group_id": representatives["molecule_group_id"].to_numpy(), **counts})
 
 
@@ -239,88 +237,12 @@ def plot_combined_histograms(counts: Mapping[str, np.ndarray], out_prefix: Path)
     plt.close(fig)
 
 
-def build_model_results() -> pd.DataFrame:
-    rows = []
-    for (architecture, setting), result_dir in RESULTS.items():
-        hits = pd.read_csv(result_dir / "hit_rates_aggregate.csv")
-        score_row = hits.loc[hits["aggregation"] == "score"].iloc[0]
-        rel = pd.read_csv(result_dir / "rel_aurc_retrieval_score.csv", index_col=0)
-        row = {
-            "architecture": architecture,
-            "training_candidates": "Mass capped" if setting == "Mass capped" else "Formula capped",
-            "evaluation_candidates": setting,
-        }
-        for k in TOP_KS:
-            row[f"hit@{k}"] = float(score_row[f"hit@{k}"])
-            row[f"relAURC_conf@{k}"] = float(rel.loc["confidence", f"hit@{k}"])
-            row[f"relAURC_total@{k}"] = float(rel.loc["retrieval_total", f"hit@{k}"])
-        rows.append(row)
-    return pd.DataFrame(rows)
-
-
-def _format_number(value: float, digits: int = 3) -> str:
-    return f"{value:.{digits}f}"
-
-
-def write_manuscript_tables(stats: pd.DataFrame, results: pd.DataFrame, out_path: Path) -> None:
-    stats_display = stats.copy()
-    stats_display["IQR"] = stats_display.apply(
-        lambda row: f"{row['q25']:.1f}-{row['q75']:.1f}", axis=1
-    )
-    stats_display["At cap (%)"] = 100.0 * stats_display["fraction_equal_256"]
-    stats_display["Above cap (%)"] = 100.0 * stats_display["fraction_above_256"]
-    stats_columns = ["setting", "n_queries", "median", "IQR", "mean", "max", "At cap (%)", "Above cap (%)"]
-
-    lines = [
-        "# Recommended Candidate-Pool Appendix Tables",
-        "",
-        "## Table A. Candidate-pool characteristics on the official test fold",
-        "",
-        "| Candidate setting | Queries | Median | IQR | Mean | Maximum | At 256 (%) | Above 256 (%) |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|",
-    ]
-    for row in stats_display[stats_columns].itertuples(index=False, name=None):
-        setting, n_queries, median, iqr, mean, maximum, at_cap, above_cap = row
-        lines.append(
-            f"| {setting} | {int(n_queries)} | {median:.1f} | {iqr} | {mean:.1f} | "
-            f"{int(maximum)} | {at_cap:.1f} | {above_cap:.1f} |"
-        )
-
-    lines.extend([
-        "",
-        "## Table B. Retrieval and selective-prediction performance",
-        "",
-        "All values use score aggregation, InChIKey-based correctness, and T_eval = 0.003. "
-        "Lower relAURC is better.",
-        "",
-        "| Architecture | Training candidates | Evaluation candidates | Hit@1 | Hit@5 | Hit@20 | conf relAURC@1 | conf relAURC@5 | conf relAURC@20 | total relAURC@1 | total relAURC@5 | total relAURC@20 |",
-        "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
-    ])
-    for _, row in results.iterrows():
-        values = [
-            row["architecture"],
-            row["training_candidates"],
-            row["evaluation_candidates"],
-            *[_format_number(row[f"hit@{k}"]) for k in TOP_KS],
-            *[_format_number(row[f"relAURC_conf@{k}"]) for k in TOP_KS],
-            *[_format_number(row[f"relAURC_total@{k}"]) for k in TOP_KS],
-        ]
-        lines.append("| " + " | ".join(values) + " |")
-    lines.extend([
-        "",
-        "The mass-filtered MLP is separately trained on mass-filtered candidates; therefore, the "
-        "formula-versus-mass rows compare matched end-to-end pipelines rather than an evaluation-only candidate swap.",
-        "Transformer results for mass-filtered training are not yet available.",
-    ])
-    out_path.write_text("\n".join(lines) + "\n")
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dataset_tsv", type=Path, default=Path("/data/home/mira/data/msuq/MassSpecGym.tsv"))
-    parser.add_argument("--helper_dir", type=Path, default=Path("/data/home/mira/data/msuq"))
-    parser.add_argument("--out_dir", type=Path, default=Path("outputs/revision_candidate_comparison/appendix_structured"))
-    parser.add_argument("--distributions_only", action="store_true")
+    parser.add_argument("--dataset_tsv", type=Path, required=True)
+    parser.add_argument("--helper_dir", type=Path, required=True)
+    parser.add_argument("--out_dir", type=Path, default=Path("outputs/paper_figures/candidates"))
+    parser.add_argument("--distributions_only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--max_queries", type=int)
     args = parser.parse_args()
     args.out_dir.mkdir(parents=True, exist_ok=True)
@@ -349,10 +271,6 @@ def main() -> None:
 
     stats.to_csv(args.out_dir / "table_A_candidate_pool_statistics.csv", index=False)
     per_query.to_csv(args.out_dir / "candidate_counts_per_query.csv", index=False)
-    if not args.distributions_only:
-        results = build_model_results()
-        results.to_csv(args.out_dir / "table_B_model_results.csv", index=False)
-        write_manuscript_tables(stats, results, args.out_dir / "recommended_tables.md")
     print(f"Saved structured appendix outputs to {args.out_dir}")
 
 

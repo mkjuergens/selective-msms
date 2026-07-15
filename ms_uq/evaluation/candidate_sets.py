@@ -1,4 +1,4 @@
-"""Deterministic candidate controls for the revision rerun."""
+"""Deterministic candidate-set construction, auditing, and summaries."""
 
 from __future__ import annotations
 
@@ -14,6 +14,29 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from ms_uq.data import candidate_fps_to_dense
+
+
+CANDIDATE_CAP = 256
+
+
+def summarize_candidate_sizes(setting: str, sizes: np.ndarray, cap: int = CANDIDATE_CAP) -> dict:
+    sizes = np.asarray(sizes, dtype=np.int64)
+    if sizes.size == 0:
+        raise ValueError("Cannot summarize an empty candidate-size array")
+    return {
+        "setting": setting,
+        "n_queries": int(sizes.size),
+        "min": int(sizes.min()),
+        "q25": float(np.quantile(sizes, 0.25)),
+        "median": float(np.median(sizes)),
+        "mean": float(sizes.mean()),
+        "q75": float(np.quantile(sizes, 0.75)),
+        "max": int(sizes.max()),
+        f"n_equal_{cap}": int(np.count_nonzero(sizes == cap)),
+        f"fraction_equal_{cap}": float(np.mean(sizes == cap)),
+        f"n_above_{cap}": int(np.count_nonzero(sizes > cap)),
+        f"fraction_above_{cap}": float(np.mean(sizes > cap)),
+    }
 
 
 def normalize_inchikey(value) -> str:

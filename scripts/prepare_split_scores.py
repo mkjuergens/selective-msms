@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare split-specific fp_probs and ragged score bundles for revision analyses."""
+"""Prepare split-specific fp_probs and ragged score bundles for paper analyses."""
 
 from __future__ import annotations
 

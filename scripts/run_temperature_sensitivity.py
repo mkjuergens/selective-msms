@@ -29,7 +29,7 @@ from ms_uq.evaluation.visualisation import (
     get_metric_style,
 )
 
-from ms_uq.evaluation.revision_features import (
+from ms_uq.evaluation.confidence_features import (
     hit_arrays,
     relative_aurc,
     softmax_temperature_features,
@@ -37,7 +37,7 @@ from ms_uq.evaluation.revision_features import (
     spearman_confidence_log_candidates,
 )
 from ms_uq.utils import load_ground_truth, resolve_candidate_paths
-from ms_uq.evaluation.revision_candidates import canonical_candidate_view, normalize_inchikey
+from ms_uq.evaluation.candidate_sets import canonical_candidate_view, normalize_inchikey
 
 
 DEFAULT_TEMPERATURES = [0.001, 0.003, 0.01, 0.03, 0.1, 0.3, 1.0]

@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 import torch
 
-from ms_uq.evaluation.revision_features import (
+from ms_uq.evaluation.confidence_features import (
     retrieval_temperature_features,
     score_cache_name,
     score_gap_at_k,
@@ -26,7 +26,7 @@ def test_sgr_split_is_deterministic_and_disjoint():
 
 
 def test_sgr_exports_all_manuscript_single_score_curves(tmp_path: Path):
-    from ms_uq.evaluation.revision_reporting import SGR_SINGLE_MEASURES, run_sgr_stability
+    from ms_uq.evaluation.paper_reporting import SGR_SINGLE_MEASURES, run_sgr_stability
 
     rows = []
     for run_label in ["mlp_formula", "transformer_formula"]:
@@ -233,7 +233,7 @@ def test_meta_training_grouped_cv_smoke():
 
 
 def test_candidate_control_is_deterministic_deduplicated_and_target_protected():
-    from ms_uq.evaluation.revision_candidates import select_candidate_indices
+    from ms_uq.evaluation.candidate_sets import select_candidate_indices
 
     candidates = ["NEGB", "TARGET", "NEGA", "NEGB"]
     first = select_candidate_indices(candidates, ["TARGET"], cap=3, seed=42)
@@ -245,7 +245,7 @@ def test_candidate_control_is_deterministic_deduplicated_and_target_protected():
 
 
 def test_canonical_candidate_view_is_input_order_independent():
-    from ms_uq.evaluation.revision_candidates import canonical_candidate_view
+    from ms_uq.evaluation.candidate_sets import canonical_candidate_view
 
     ids = np.asarray(["B", "A", "B"])
     fps = np.asarray([[1, 0, 0, 0], [0, 1, 0, 0], [1, 1, 0, 0]], dtype=bool)
@@ -257,7 +257,7 @@ def test_canonical_candidate_view_is_input_order_independent():
 
 
 def test_discrete_aurc_and_analytic_random_baseline():
-    from ms_uq.evaluation.revision_features import canonical_aurc_table, discrete_aurc
+    from ms_uq.evaluation.confidence_features import canonical_aurc_table, discrete_aurc
 
     loss = np.asarray([0.0, 1.0])
     confidence = np.asarray([1.0, 0.0])
@@ -269,7 +269,7 @@ def test_discrete_aurc_and_analytic_random_baseline():
 
 
 def test_canonical_temperature_features_are_confidence_oriented():
-    from ms_uq.evaluation.revision_features import softmax_temperature_features
+    from ms_uq.evaluation.confidence_features import softmax_temperature_features
 
     stack = torch.tensor([[0.9, 0.2, 0.1], [0.8, 0.3, 0.0]], dtype=torch.float64)
     aggregate = stack.mean(dim=0)
@@ -294,7 +294,7 @@ def test_meta_pipeline_has_no_imputer_and_uses_strict_logistic_settings():
 
 
 def test_constant_loss_has_defined_aurc_and_undefined_relative_aurc():
-    from ms_uq.evaluation.revision_features import canonical_aurc_table
+    from ms_uq.evaluation.confidence_features import canonical_aurc_table
 
     confidence = np.asarray([0.8, 0.2])
     aurc, rel = canonical_aurc_table(
@@ -306,7 +306,7 @@ def test_constant_loss_has_defined_aurc_and_undefined_relative_aurc():
 
 
 def test_record_candidate_cap_preserves_duplicate_occurrences_and_targets():
-    from ms_uq.evaluation.revision_candidates import select_record_candidate_indices
+    from ms_uq.evaluation.candidate_sets import select_record_candidate_indices
 
     records = ["dup", "target", "dup", "negative-3", "negative-4"]
     identities = ["D", "T", "D", "N3", "N4"]
@@ -322,7 +322,7 @@ def test_record_candidate_cap_preserves_duplicate_occurrences_and_targets():
 
 
 def test_record_candidate_cap_keeps_all_records_when_pool_is_under_cap():
-    from ms_uq.evaluation.revision_candidates import select_record_candidate_indices
+    from ms_uq.evaluation.candidate_sets import select_record_candidate_indices
 
     result = select_record_candidate_indices(
         ["same", "same", "target"], ["D", "D", "T"], ["T"], cap=256, seed=42
@@ -440,7 +440,7 @@ def test_paper_figures_exclude_normalized_entropy_and_include_bitwise_aleatoric(
 
 
 def test_manuscript_aurc_uses_trapezoid_and_seed42_random_baseline():
-    from ms_uq.evaluation.revision_features import canonical_aurc_table
+    from ms_uq.evaluation.confidence_features import canonical_aurc_table
 
     confidence = np.asarray([0.9, 0.6, 0.3, 0.1])
     hit = np.asarray([1.0, 0.0, 1.0, 0.0])
@@ -459,7 +459,7 @@ def test_manuscript_aurc_uses_trapezoid_and_seed42_random_baseline():
 
 def test_record_formula_cap_builder_preserves_selected_source_order(tmp_path: Path):
     import json
-    from ms_uq.evaluation.revision_candidates import build_record_preserving_formula_cap
+    from ms_uq.evaluation.candidate_sets import build_record_preserving_formula_cap
 
     metadata = pd.DataFrame([{
         "identifier": "q1", "smiles": "query", "inchikey": "TARGET-AA", "fold": "test",
@@ -488,7 +488,7 @@ def test_record_formula_cap_builder_preserves_selected_source_order(tmp_path: Pa
     selected_records = json.loads(prefix.with_suffix(".json").read_text())["query"]
     with np.load(prefix.with_name(prefix.name + "_inchi.npz")) as selected_inchis:
         selected_ids = selected_inchis["query"].astype(str).tolist()
-    from ms_uq.evaluation.revision_candidates import select_record_candidate_indices
+    from ms_uq.evaluation.candidate_sets import select_record_candidate_indices
     expected = select_record_candidate_indices(records, identities, ["TARGET"], cap=4, seed=42)
     assert selected_records == [records[index] for index in expected.source_indices]
     assert selected_ids == [identities[index] for index in expected.source_indices]
@@ -498,8 +498,8 @@ def test_record_formula_cap_builder_preserves_selected_source_order(tmp_path: Pa
     assert bool(summary.loc[0, "source_order_preserved"])
 
 
-def test_revision_runner_expands_downstream_stage_dependencies():
-    from scripts.run_revision_rerun import STAGES, expand_stage_dependencies
+def test_paper_runner_expands_downstream_stage_dependencies():
+    from scripts.run_paper_evaluation import STAGES, expand_stage_dependencies
 
     assert expand_stage_dependencies(["metrics"]) == [
         "preflight", "candidates", "scores", "metrics",
@@ -517,7 +517,7 @@ def test_canonical_temperature_matches_rankwise_training_temperature():
     from ms_uq.unc_measures.eval_measures import compute_uncertainties
     from ms_uq.unc_measures.retrieval_unc import RetrievalUncertainty
     from scripts.run_evaluation import EvalConfig
-    from scripts.run_revision_rerun import EVALUATION_TEMPERATURE
+    from scripts.run_paper_evaluation import EVALUATION_TEMPERATURE
     from scripts.run_sgr_evaluation import SGRConfig
 
     expected = 0.003
@@ -543,3 +543,42 @@ def test_canonical_temperature_matches_rankwise_training_temperature():
     config_dir = Path(__file__).resolve().parents[1] / "config"
     for config_path in config_dir.glob("*.yml"):
         values = list(configured_temperatures(yaml.safe_load(config_path.read_text())))
+        assert all(value == pytest.approx(expected) for value in values)
+
+
+def test_candidate_size_summary_preserves_record_counts():
+    from ms_uq.evaluation.candidate_sets import summarize_candidate_sizes
+
+    summary = summarize_candidate_sizes("test", np.asarray([1, 256, 256, 400]))
+    assert summary["n_queries"] == 4
+    assert summary["n_equal_256"] == 2
+    assert summary["n_above_256"] == 1
+    assert summary["fraction_equal_256"] == pytest.approx(0.5)
+
+
+def test_release_zip_is_deterministic_and_confined_to_artifacts(tmp_path):
+    import zipfile
+
+    from ms_uq.evaluation.artifacts import _write_zip, sha256
+
+    source = tmp_path / "payload.bin"
+    source.write_bytes(b"paper artifact\n")
+    members = [(source, "artifacts/results/payload.bin", "result", "", "")]
+    first = tmp_path / "first.zip"
+    second = tmp_path / "second.zip"
+    first_manifest = _write_zip(first, members)
+    _write_zip(second, members)
+    assert sha256(first) == sha256(second)
+    assert first_manifest[0].sha256 == sha256(source)
+    with zipfile.ZipFile(first) as archive:
+        assert archive.namelist() == ["artifacts/results/payload.bin"]
+        assert archive.testzip() is None
+
+
+def test_release_zip_rejects_unsafe_member_path(tmp_path):
+    from ms_uq.evaluation.artifacts import _write_zip
+
+    source = tmp_path / "payload.bin"
+    source.write_bytes(b"x")
+    with pytest.raises(ValueError, match="Unsafe archive path"):
+        _write_zip(tmp_path / "bad.zip", [(source, "../payload.bin", "result", "", "")])

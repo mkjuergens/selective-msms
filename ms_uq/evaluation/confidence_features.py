@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
@@ -8,9 +9,144 @@ import pandas as pd
 import torch
 from scipy.stats import spearmanr
 
+from ms_uq.data import candidate_fps_to_dense
+from ms_uq.evaluation.candidate_sets import (
+    canonical_candidate_indices,
+    canonical_candidate_view,
+    normalize_inchikey,
+)
+from ms_uq.utils import resolve_candidate_paths
+from ms_uq.unc_measures.eval_measures import compute_fingerprint_uncertainties
+
 
 
 _EPS = 1e-12
+
+
+def load_score_bundle(path: Path):
+    data = torch.load(path, map_location="cpu")
+    labels = data.get("labels_flat")
+    if labels is None:
+        raise ValueError(f"{path} does not contain labels_flat; recompute with return_labels=True")
+    scores_stack = data.get("scores_stack_flat")
+    if scores_stack is None:
+        scores_stack = data["scores_flat"].unsqueeze(0)
+    aggregate = data["scores_flat"].double()
+    stack = scores_stack.double()
+    tolerance = 1e-6 if data["scores_flat"].dtype == torch.float32 else 1e-10
+    if not torch.allclose(aggregate, stack.mean(dim=0), atol=tolerance, rtol=tolerance):
+        raise ValueError(f"{path}: aggregate scores are not the arithmetic member mean")
+    return aggregate, stack, data["ptr"].long(), labels.float()
+
+
+def load_fingerprint_predictions(path: Path) -> torch.Tensor:
+    data = torch.load(path, map_location="cpu", mmap=True)
+    return data["stack"] if isinstance(data, dict) else data
+
+
+def split_metadata(dataset_tsv: Path, fold: str) -> pd.DataFrame:
+    frame = pd.read_csv(dataset_tsv, sep="\t")
+    output = frame[frame["fold"] == fold].copy().reset_index(drop=True)
+    if output.empty:
+        raise ValueError(f"No rows for fold={fold}")
+    output["query_id"] = output["identifier"].astype(str)
+    output["molecule_group_id"] = output["inchikey"].map(normalize_inchikey)
+    return output
+
+
+def candidate_views_for_metadata(
+    candidate_inchis,
+    candidate_fps,
+    metadata: pd.DataFrame,
+    include_fps: bool = True,
+    record_policy: str = "deduplicate",
+):
+    if record_policy not in {"preserve", "deduplicate"}:
+        raise ValueError("record_policy must be preserve or deduplicate")
+    cache = {}
+    ids_by_query = []
+    for smiles in metadata["smiles"]:
+        if smiles not in cache:
+            if record_policy == "preserve":
+                ids = np.asarray([normalize_inchikey(value) for value in candidate_inchis[smiles]], dtype=object)
+                dense = candidate_fps_to_dense(
+                    candidate_fps[smiles], n_candidates=len(ids), fp_size=4096,
+                ) if include_fps else None
+            elif include_fps:
+                ids, selected_fps, _ = canonical_candidate_view(candidate_inchis[smiles], candidate_fps[smiles])
+                dense = candidate_fps_to_dense(selected_fps, n_candidates=len(ids), fp_size=4096)
+            else:
+                ids, _ = canonical_candidate_indices(candidate_inchis[smiles], candidate_fps[smiles])
+                dense = None
+            cache[smiles] = (ids, dense)
+        ids_by_query.append(cache[smiles][0])
+    candidate_fp_views = {smiles: values[1] for smiles, values in cache.items() if values[1] is not None}
+    return ids_by_query, candidate_fp_views
+
+
+def build_deployment_features(
+    score_path: Path,
+    fp_probs_path: Path,
+    metadata: pd.DataFrame,
+    helper_dir: Path,
+    candidate_setting: str,
+    top_ks: Iterable[int],
+    temperature: float,
+    include_cardinality: bool = True,
+    candidate_record_policy: str = "deduplicate",
+    include_fingerprint_uncertainty: bool = False,
+    candidate_tie_break: str = "candidate_id",
+    feature_convention: str = "canonical",
+) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray], pd.DataFrame]:
+    scores_flat, scores_stack, ptr, labels = load_score_bundle(score_path)
+    n_queries = ptr.numel() - 1
+    if len(metadata) != n_queries:
+        raise ValueError("Metadata and score query counts do not align")
+    pbits = None
+    if include_cardinality or include_fingerprint_uncertainty:
+        pbits = load_fingerprint_predictions(fp_probs_path)
+        if pbits.shape[0] < n_queries:
+            raise ValueError("Prediction and score query counts do not align")
+        pbits = pbits[:n_queries]
+
+    _, candidate_fp_path, candidate_inchi_path = resolve_candidate_paths(helper_dir, candidate_setting)
+    with np.load(candidate_fp_path) as candidate_fps, np.load(candidate_inchi_path) as candidate_inchis:
+        ids_by_query, candidate_fp_views = candidate_views_for_metadata(
+            candidate_inchis, candidate_fps, metadata, include_fps=include_cardinality,
+            record_policy=candidate_record_policy,
+        )
+        if candidate_tie_break not in {"source_order", "candidate_id"}:
+            raise ValueError("candidate_tie_break must be source_order or candidate_id")
+        ranking_ids = ids_by_query if candidate_tie_break == "candidate_id" else None
+        hits = hit_arrays(scores_flat, labels, ptr, top_ks, candidate_ids=ranking_ids)
+        score_features, imputations = score_position_features(scores_flat, ptr, top_ks)
+        temperature_features = retrieval_temperature_features(
+            scores_stack, scores_flat, ptr, temperature, top_ks,
+            candidate_ids=ranking_ids, feature_convention=feature_convention,
+        )
+        cardinality = {}
+        if include_cardinality:
+            cardinality = cardinality_features(
+                pbits, scores_flat, ptr, candidate_fp_views,
+                metadata["smiles"].tolist(), ranking_ids,
+            )
+    fingerprint_features = {}
+    if include_fingerprint_uncertainty:
+        fingerprint_uncertainty = compute_fingerprint_uncertainties(
+            pbits, ["bitwise_total", "bitwise_aleatoric", "bitwise_epistemic"], batch_size=64,
+        )
+        fingerprint_features = {
+            name: -np.asarray(values, dtype=np.float64)
+            for name, values in fingerprint_uncertainty.items()
+        }
+    features = {
+        **score_features, **temperature_features, **fingerprint_features,
+        **metadata_features(metadata), **cardinality,
+    }
+    for name, values in features.items():
+        if not np.isfinite(values).all():
+            raise ValueError(f"Feature {name} contains {int((~np.isfinite(values)).sum())} non-finite values")
+    return features, hits, pd.DataFrame([imputation.__dict__ for imputation in imputations])
 
 
 def temperature_tag(temperature: float) -> str:

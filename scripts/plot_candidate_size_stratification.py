@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from ms_uq.evaluation.revision_features import canonical_aurc_table
+from ms_uq.evaluation.confidence_features import canonical_aurc_table
 from ms_uq.evaluation.visualisation import (
     _BAR_PITCH,
     _FA,

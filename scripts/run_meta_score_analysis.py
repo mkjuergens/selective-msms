@@ -18,155 +18,19 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import LinearSVC
 
-from ms_uq.data import candidate_fps_to_dense
-from ms_uq.evaluation.revision_candidates import (
-    canonical_candidate_indices, canonical_candidate_view, normalize_inchikey,
-)
-from ms_uq.evaluation.revision_features import (
+from ms_uq.evaluation.confidence_features import (
+    build_deployment_features,
     canonical_aurc_table,
-    cardinality_features,
-    hit_arrays,
-    metadata_features,
-    retrieval_temperature_features,
-    score_position_features,
+    load_fingerprint_predictions,
+    load_score_bundle,
+    split_metadata,
 )
 from ms_uq.evaluation.selective_risk import SelectiveGuaranteedRisk, attach_eval_result, make_cal_eval_split
-from ms_uq.utils import resolve_candidate_paths
-from ms_uq.unc_measures.eval_measures import compute_fingerprint_uncertainties
 
 
 DEFAULT_TOP_KS = [1, 5, 20]
 DEFAULT_TARGET_RISKS = [0.1, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5]
 DEFAULT_CS = [1e-4, 3e-4, 1e-3, 3e-3, 1e-2, 3e-2, 1e-1, 3e-1, 1.0, 3.0, 10.0, 30.0, 100.0]
-
-
-def load_scores(path: Path):
-    data = torch.load(path, map_location="cpu")
-    labels = data.get("labels_flat")
-    if labels is None:
-        raise ValueError(f"{path} does not contain labels_flat; recompute with return_labels=True")
-    scores_stack = data.get("scores_stack_flat")
-    if scores_stack is None:
-        scores_stack = data["scores_flat"].unsqueeze(0)
-    aggregate = data["scores_flat"].double()
-    stack = scores_stack.double()
-    tolerance = 1e-6 if data["scores_flat"].dtype == torch.float32 else 1e-10
-    if not torch.allclose(aggregate, stack.mean(dim=0), atol=tolerance, rtol=tolerance):
-        raise ValueError(f"{path}: aggregate scores are not the arithmetic member mean")
-    return aggregate, stack, data["ptr"].long(), labels.float()
-
-
-def load_pbits(path: Path) -> torch.Tensor:
-    data = torch.load(path, map_location="cpu", mmap=True)
-    return data["stack"] if isinstance(data, dict) else data
-
-
-def split_metadata(dataset_tsv: Path, fold: str) -> pd.DataFrame:
-    df = pd.read_csv(dataset_tsv, sep="\t")
-    out = df[df["fold"] == fold].copy().reset_index(drop=True)
-    if out.empty:
-        raise ValueError(f"No rows for fold={fold}")
-    out["query_id"] = out["identifier"].astype(str)
-    out["molecule_group_id"] = out["inchikey"].map(normalize_inchikey)
-    return out
-
-
-def canonical_views_for_metadata(
-    candidate_inchis, candidate_fps, metadata: pd.DataFrame, include_fps: bool = True,
-    record_policy: str = "deduplicate",
-):
-    if record_policy not in {"preserve", "deduplicate"}:
-        raise ValueError("record_policy must be preserve or deduplicate")
-    cache = {}
-    ids_by_query = []
-    for smiles in metadata["smiles"]:
-        if smiles not in cache:
-            if record_policy == "preserve":
-                ids = np.asarray([normalize_inchikey(value) for value in candidate_inchis[smiles]], dtype=object)
-                dense = candidate_fps_to_dense(
-                    candidate_fps[smiles], n_candidates=len(ids), fp_size=4096
-                ) if include_fps else None
-            elif include_fps:
-                ids, selected_fps, _ = canonical_candidate_view(
-                    candidate_inchis[smiles], candidate_fps[smiles]
-                )
-                dense = candidate_fps_to_dense(selected_fps, n_candidates=len(ids), fp_size=4096)
-            else:
-                ids, _ = canonical_candidate_indices(
-                    candidate_inchis[smiles], candidate_fps[smiles]
-                )
-                dense = None
-            cache[smiles] = (ids, dense)
-        ids_by_query.append(cache[smiles][0])
-    candidate_fp_views = {
-        smiles: values[1] for smiles, values in cache.items() if values[1] is not None
-    }
-    return ids_by_query, candidate_fp_views
-
-
-def build_features(
-    score_path: Path,
-    fp_probs_path: Path,
-    metadata: pd.DataFrame,
-    helper_dir: Path,
-    candidate_setting: str,
-    top_ks: Iterable[int],
-    temperature: float,
-    include_cardinality: bool = True,
-    candidate_record_policy: str = "deduplicate",
-    include_fingerprint_uncertainty: bool = False,
-    candidate_tie_break: str = "candidate_id",
-    feature_convention: str = "canonical",
-) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray], pd.DataFrame]:
-    scores_flat, scores_stack, ptr, labels = load_scores(score_path)
-    n_queries = ptr.numel() - 1
-    if len(metadata) != n_queries:
-        raise ValueError("Metadata and score query counts do not align")
-    pbits = None
-    if include_cardinality or include_fingerprint_uncertainty:
-        pbits = load_pbits(fp_probs_path)
-        if pbits.shape[0] < n_queries:
-            raise ValueError("Prediction and score query counts do not align")
-        # Smoke runs score a deterministic prefix while retaining full-fold predictions.
-        pbits = pbits[:n_queries]
-
-    _, cand_fp_path, cand_inchi_path = resolve_candidate_paths(helper_dir, candidate_setting)
-    with np.load(cand_fp_path) as candidate_fps, np.load(cand_inchi_path) as candidate_inchis:
-        ids_by_query, candidate_fp_views = canonical_views_for_metadata(
-            candidate_inchis, candidate_fps, metadata, include_fps=include_cardinality,
-            record_policy=candidate_record_policy,
-        )
-        if candidate_tie_break not in {"source_order", "candidate_id"}:
-            raise ValueError("candidate_tie_break must be source_order or candidate_id")
-        ranking_ids = ids_by_query if candidate_tie_break == "candidate_id" else None
-        hits = hit_arrays(scores_flat, labels, ptr, top_ks, candidate_ids=ranking_ids)
-        score_feats, imputations = score_position_features(scores_flat, ptr, top_ks)
-        temp_feats = retrieval_temperature_features(
-            scores_stack, scores_flat, ptr, temperature, top_ks, candidate_ids=ranking_ids,
-            feature_convention=feature_convention,
-        )
-        card_feats = {}
-        if include_cardinality:
-            card_feats = cardinality_features(
-                pbits, scores_flat, ptr, candidate_fp_views, metadata["smiles"].tolist(), ranking_ids
-            )
-    fingerprint_feats = {}
-    if include_fingerprint_uncertainty:
-        fingerprint_uncertainty = compute_fingerprint_uncertainties(
-            pbits, ["bitwise_total", "bitwise_aleatoric", "bitwise_epistemic"],
-            batch_size=64,
-        )
-        fingerprint_feats = {
-            name: -np.asarray(values, dtype=np.float64)
-            for name, values in fingerprint_uncertainty.items()
-        }
-    features = {**score_feats, **temp_feats, **fingerprint_feats, **metadata_features(metadata), **card_feats}
-    for name, values in features.items():
-        if not np.isfinite(values).all():
-            bad = int((~np.isfinite(values)).sum())
-            raise ValueError(f"Feature {name} contains {bad} non-finite values")
-    imp_df = pd.DataFrame([imp.__dict__ for imp in imputations])
-    return features, hits, imp_df
 
 
 def feature_names_for_k(k: int, available: Dict[str, np.ndarray], exclude_gap_at_k: bool = False) -> List[str]:
@@ -373,14 +237,14 @@ def main() -> None:
     if args.max_queries is not None:
         val_meta = val_meta.iloc[:args.max_queries].copy()
         test_meta = test_meta.iloc[:args.max_queries].copy()
-    val_features, val_hits, val_imp = build_features(
+    val_features, val_hits, val_imp = build_deployment_features(
         args.val_score, args.val_fp_probs, val_meta, args.helper_dir,
         args.candidate_setting, args.top_ks, args.temperature,
         candidate_record_policy=args.candidate_record_policy,
         candidate_tie_break=args.candidate_tie_break,
         feature_convention=args.feature_convention,
     )
-    test_features, test_hits, test_imp = build_features(
+    test_features, test_hits, test_imp = build_deployment_features(
         args.test_score, args.test_fp_probs, test_meta, args.helper_dir,
         args.candidate_setting, args.top_ks, args.temperature,
         candidate_record_policy=args.candidate_record_policy,
