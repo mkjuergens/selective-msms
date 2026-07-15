@@ -11,7 +11,7 @@ from typing import List, Tuple
 import numpy as np
 import pandas as pd
 
-from ms_uq.evaluation.paper_reporting import (
+from ms_uq.paper.reporting import (
     BASE_SELECTORS,
     GROUP_COLUMNS,
     attach_intervals,

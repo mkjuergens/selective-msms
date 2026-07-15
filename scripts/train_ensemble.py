@@ -39,7 +39,7 @@ def _train_py_path() -> str:
     cand = here / "train.py"
     if cand.exists():
         return str(cand)
-    return "/data/home/mira/MS-UQ/ms_uq/train.py"
+    raise FileNotFoundError("scripts/train.py was not found; set MSUQ_TRAIN_PY explicitly")
 
 
 def _run_train(argv, env=None, tee_path: Path | None = None):
@@ -439,4 +439,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

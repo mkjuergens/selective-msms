@@ -1,11 +1,11 @@
 # Selective-MSMS
 
-Code and frozen artifacts for **"When Should We Trust the Annotation? Selective Prediction for Molecular Structure Retrieval from Mass Spectra"**.
+Code and data for **"When Should We Trust the Annotation? Selective Prediction for Molecular Structure Retrieval from Mass Spectra"**.
 
-We introduce a selective-prediction framework for molecular-structure retrieval from tandem mass spectra (MS/MS), enabling models to abstain when uncertainty is high. The experiments evaluate fingerprint-, retrieval-, and representation-level confidence scores using risk-coverage curves and selective risk control on the [MassSpecGym](https://github.com/pluskal-lab/MassSpecGym) benchmark.
+We study when molecular-structure retrieval predictions from tandem mass spectra (MS/MS) should be accepted or deferred. The repository evaluates fingerprint-, retrieval-, and representation-level confidence scores using risk-coverage curves and selective risk control on the [MassSpecGym](https://github.com/pluskal-lab/MassSpecGym) benchmark.
 
 - **Paper:** [arXiv:2603.10950](https://arxiv.org/abs/2603.10950)
-- **Artifacts:** [10.5281/zenodo.19108280](https://doi.org/10.5281/zenodo.19108280)
+- **Data and models:** [10.5281/zenodo.19108280](https://doi.org/10.5281/zenodo.19108280)
 
 ## Overview
 
@@ -13,25 +13,9 @@ We introduce a selective-prediction framework for molecular-structure retrieval 
   <img src="docs/figures/figure_1.png" alt="Overview of the selective molecular-retrieval framework" width="700"/>
 </p>
 
-## Repository Layout
-
-```text
-config/paper.yml                  Frozen paper settings and logical artifact IDs
-ms_uq/                            Training, retrieval, uncertainty, and reporting code
-scripts/run_paper_evaluation.py   Full evaluation, report-only reproduction, validation
-scripts/prepare_release.py        Canonical result and release packaging
-scripts/train.py                  Single-model training
-scripts/train_ensemble.py         Ensemble launcher
-scripts/run_evaluation.py         General evaluation entrypoint
-scripts/run_sgr_evaluation.py     General selective-risk-control entrypoint
-tests/                            Numerical and pipeline regression tests
-```
-
-Generated data, results, model artifacts, and release archives are deliberately excluded from Git.
-
 ## Installation
 
-The released `source.zip` contains `environment.lock.yml`, which records the environment used for the paper artifacts.
+The exact environment used for the paper is recorded in `environment.lock.yml`.
 
 ```bash
 conda env create -f environment.lock.yml
@@ -40,84 +24,60 @@ pip install -e ".[dev]"
 pytest -q
 ```
 
-CUDA is recommended for candidate rescoring and prediction generation. Report-only reproduction and validation run on CPU and do not require MassSpecGym files.
+CUDA is needed only for prediction generation and candidate rescoring. Reproducing the released tables, figures, and report runs on CPU.
 
-## Data Preparation
+## Released Data
 
-Full candidate rescoring uses `RetrievalDataset_PrecompFPandInchi`, adapted from [ms-mole](https://github.com/gdewael/ms-mole), together with precomputed 4096-bit Morgan fingerprints and candidate InChIKeys. Large MassSpecGym data and candidate files are not duplicated in the Zenodo deposit.
+The Zenodo record separates the large files so that only the required parts need to be downloaded:
 
-The exact external filenames, source locations, sizes, SHA-256 hashes, and preparation instructions are recorded in [`EXTERNAL_DATA.tsv`](EXTERNAL_DATA.tsv). Report-only reproduction from `results.zip` does not require these files.
+| File | Contents | Needed for |
+|---|---|---|
+| `results.zip` | Scores, metrics, tables, and figures | Report reproduction |
+| `predictions.zip` | Seven frozen fingerprint-prediction tensors | Full rescoring |
+| `checkpoints.zip` | The 18 model checkpoint/state files | Model provenance and new inference |
+| `source.zip` | Exact source snapshot | Archival reference |
 
-## Released Artifacts
-
-The Zenodo deposit contains exactly seven files:
-
-```text
-README.md
-MANIFEST.tsv
-SHA256SUMS
-source.zip
-results.zip
-predictions.zip
-checkpoints.zip
-```
-
-Extract the archives from the root of this repository. They write only below `artifacts/`.
+Extract the data archives in the repository root. They create `data/results/` and `data/models/`.
 
 ```bash
-unzip source.zip
 unzip results.zip
 unzip predictions.zip
 unzip checkpoints.zip
 ```
 
-The model artifact groups are:
+Large MassSpecGym files are not included. Their exact filenames, sources, sizes, hashes, and preparation notes are listed in [`EXTERNAL_DATA.tsv`](EXTERNAL_DATA.tsv).
 
-- `ensemble_mlp_formula`
-- `ensemble_transformer_formula`
-- `ensemble_mlp_mass`
-- `mc_dropout_mlp_formula`
-- `laplace_mlp_formula`
+## Reproduce Results
 
-The result matrix covers official formula candidates, paired capped and uncapped formula candidates, and the available capped mass candidates. Candidate records are preserved without deduplication in the primary analysis, and `T_eval=0.003` is used throughout.
-
-## Report-Only Reproduction
-
-Recreate the numerical/figure bundle and static HTML index from `results.zip` alone:
+`results.zip` is sufficient to recreate the browsable report without downloading MassSpecGym:
 
 ```bash
-python scripts/run_paper_evaluation.py report \
-  --artifacts artifacts \
-  --output-dir outputs/paper_results_reproduced
-
-python scripts/run_paper_evaluation.py validate \
-  --artifacts artifacts
+python scripts/evaluate.py report --data data --output outputs/report
+python scripts/evaluate.py validate --data data
 ```
 
-Open `outputs/paper_results_reproduced/report/index.html` in a browser. This path requires no MassSpecGym data and performs no model inference.
+Open `outputs/report/index.html` to browse the reproduced figures and tables.
 
-## Full Paper Evaluation
-
-Full candidate rescoring requires the released predictions/checkpoints plus the external files listed in `artifacts/source/EXTERNAL_DATA.tsv`. Put those external files in one local directory, verify their SHA-256 hashes, and run:
+For full candidate rescoring and analysis, extract the predictions and checkpoints and provide the external MassSpecGym directory:
 
 ```bash
-python scripts/run_paper_evaluation.py full \
-  --data-dir /path/to/massspecgym-data \
-  --artifacts artifacts \
-  --out-dir outputs/paper_run \
+python scripts/evaluate.py full \
+  --data data \
+  --massspecgym-data /path/to/massspecgym-data \
+  --output outputs/evaluation \
   --device cuda:0
 ```
 
-The full command is resumable. Use `--stages` for a subset and `--force-stage NAME` to invalidate one stage. It recomputes candidate scores and uncertainty features from frozen fingerprint predictions; it does not retrain the models or download data.
+The full evaluation is resumable and does not retrain the models or download data. It uses score-level ensemble aggregation, cosine similarity, preserved candidate records, and `T_eval=0.003`.
 
 ## Training
 
-Single-model and ensemble training remain available independently of the frozen paper artifacts:
+Train the formula-candidate MLP ensemble used in the main experiments with:
 
 ```bash
 python scripts/train_ensemble.py \
   /path/to/MassSpecGym.tsv \
-  /path/to/helpers \
+  /path/to/candidate-files \
   outputs/training \
   --method ensemble \
   --n_members 5 \
@@ -129,26 +89,22 @@ python scripts/train_ensemble.py \
   --max_parallel 5
 ```
 
-Use `--candidate_setting mass --label_mode inchikey` with the matching mass helper files for mass-candidate training. See `--help` on each entrypoint for all runtime and architecture options.
+Use `--candidate_setting mass --label_mode inchikey` with the corresponding mass-candidate files. `scripts/train.py` trains one model; `scripts/train_ensemble.py` launches independent ensemble members.
 
-## Preparing a Release
+## Repository Layout
 
-Maintainers can inventory, build, finalize, and verify the canonical release with:
-
-```bash
-python scripts/prepare_release.py plan
-
-python scripts/prepare_release.py build \
-  --source-run /path/to/completed-paper-run
-
-python scripts/prepare_release.py finalize
-
-python scripts/prepare_release.py verify
+```text
+config/paper.yml                       Paper settings
+ms_uq/                                 Models, inference, uncertainty, and evaluation
+ms_uq/paper/                           Internal paper analyses and figures
+scripts/evaluate.py                    Reproduce or rerun the paper evaluation
+scripts/train.py                       Train one model
+scripts/train_ensemble.py              Train an ensemble
+scripts/prepare_uncapped_candidates.py Build the local uncapped formula helpers
+tests/                                 Regression tests
 ```
 
-`prepare_release.py` does not download data or retrain models. It verifies all source hashes, materializes `outputs/paper_results`, creates deterministic ZIP64 archives, and rejects external MassSpecGym payloads in the deposit.
-
-After committing source or DOI metadata, `finalize` rebuilds only the small `source.zip`, `README.md`, `MANIFEST.tsv`, and `SHA256SUMS`; it preserves the large scientific payload archives.
+Generated data, models, and outputs are excluded from Git.
 
 ## Acknowledgements
 

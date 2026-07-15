@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader, Subset
 from ms_uq.inference import load_ranker
 from ms_uq.inference.retrieve import scores_from_loader
 from ms_uq.utils import load_predictions, make_train_val_test_loaders
-from run_evaluation import EvalConfig, generate_predictions, score_cache_name
+from ms_uq.paper.evaluation import EvalConfig, generate_predictions, score_cache_name
 
 
 def split_loader(config: EvalConfig, split: str):
@@ -129,10 +129,6 @@ def main() -> None:
         ens_dir=args.ens_dir,
         ens_metric=args.ens_metric,
         passes=args.passes,
-        metric=args.metric,
-        aggregations=[args.aggregation],
-        topk_k=args.topk_k,
-        topk_temp=args.topk_temp,
         temperature=args.temperature,
         device=args.device,
         batch_size=args.batch_size,

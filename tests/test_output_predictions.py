@@ -130,7 +130,7 @@ def parse_args():
                     help="If set, also compute ragged candidate probabilities at this T.")
     ap.add_argument("--n_bits", type=int, default=None, help="Expected K (e.g., 4096).")
     ap.add_argument("--skip_predict", action="store_true",
-                    help="Skip predicting; only check existing artifacts in --out_dir.")
+                    help="Skip predicting; only check existing files in --out_dir.")
     return ap.parse_args()
 
 

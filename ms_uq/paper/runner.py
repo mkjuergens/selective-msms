@@ -21,11 +21,12 @@ from typing import Dict, Iterable, List, Optional, Sequence
 import numpy as np
 import pandas as pd
 import torch
+import yaml
 
 from ms_uq.evaluation.candidate_sets import build_record_preserving_formula_cap, normalize_inchikey
-from ms_uq.evaluation.artifacts import validate_paper_results
+from ms_uq.paper.release import validate_paper_results
 from ms_uq.evaluation.confidence_features import peak_count
-from ms_uq.evaluation.paper_reporting import SGR_SINGLE_MEASURES, merge_meta_predictions, run_sgr_stability
+from ms_uq.paper.reporting import SGR_SINGLE_MEASURES, merge_meta_predictions, run_sgr_stability
 
 
 STAGES = [
@@ -45,9 +46,19 @@ STAGE_DEPENDENCIES = {
     "report": ("figures", "tables", "temperature"),
     "validate": ("report", "tables", "sgr", "bootstrap"),
 }
-EVALUATION_TEMPERATURE = 0.003
-TOP_KS = [1, 5, 20]
-TARGET_RISKS = [0.1, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5]
+PAPER_CONFIG = yaml.safe_load(
+    (Path(__file__).resolve().parents[2] / "config/paper.yml").read_text()
+)
+EVALUATION_CONFIG = PAPER_CONFIG["evaluation"]
+SGR_CONFIG = EVALUATION_CONFIG["sgr"]
+FOLD_CONFIG = PAPER_CONFIG["dataset"]["folds"]
+EVALUATION_TEMPERATURE = float(EVALUATION_CONFIG["temperature"])
+TOP_KS = [int(value) for value in EVALUATION_CONFIG["top_k"]]
+TEMPERATURE_GRID = [float(value) for value in EVALUATION_CONFIG["temperature_grid"]]
+TARGET_RISKS = [float(value) for value in SGR_CONFIG["target_risks"]]
+CANDIDATE_SEED = int(EVALUATION_CONFIG["candidate_seed"])
+SGR_SEED = int(SGR_CONFIG["split_seed"])
+SGR_DELTA = float(SGR_CONFIG["delta"])
 
 
 def expand_stage_dependencies(requested: Sequence[str]) -> List[str]:
@@ -93,10 +104,10 @@ class ScoreCell:
 class PaperEvaluationRunner:
     def __init__(self, args):
         self.args = args
-        self.repo = Path(__file__).resolve().parents[1]
-        self.data = args.data_dir.resolve()
-        self.artifacts = args.artifacts.resolve()
-        self.out = args.out_dir.resolve()
+        self.repo = Path(__file__).resolve().parents[2]
+        self.massspecgym_data = args.massspecgym_data.resolve()
+        self.paper_data = args.data.resolve()
+        self.out = args.output.resolve()
         self.python = Path(sys.executable).resolve()
         self.out.mkdir(parents=True, exist_ok=True)
         self.logs = self.out / "logs"
@@ -168,8 +179,8 @@ class PaperEvaluationRunner:
 
     def _prediction_view(self, model_id: str, split: str) -> Path:
         """Expose the shared ranker beside one released prediction without duplicating it."""
-        source_dir = self.artifacts / "models" / model_id / "predictions" / split
-        shared_ranker = self.artifacts / "models/shared/ranker.pt"
+        source_dir = self.paper_data / "models" / model_id / "predictions" / split
+        shared_ranker = self.paper_data / "models/shared/ranker.pt"
         target = self.out / "input_views" / model_id / split
         target.mkdir(parents=True, exist_ok=True)
         for source, name in [(source_dir / "fp_probs.pt", "fp_probs.pt"), (shared_ranker, "ranker.pt")]:
@@ -181,7 +192,7 @@ class PaperEvaluationRunner:
         return target
 
     def _model_sources(self) -> Dict[str, ModelSource]:
-        model_root = self.artifacts / "models"
+        model_root = self.paper_data / "models"
         checkpoints = {
             model: tuple(sorted((model_root / model / "checkpoints").glob("*")))
             for model in [
@@ -212,14 +223,14 @@ class PaperEvaluationRunner:
                 self._prediction_view("mc_dropout_mlp_formula", "test"), None,
                 checkpoints["mc_dropout_mlp_formula"],
                 prediction_samples=50,
-                archived_test_score=self.artifacts / "results/evaluations/formula_official/mc_dropout_mlp_formula/test/scores.pt",
+                archived_test_score=self.paper_data / "results/evaluations/formula_official/mc_dropout_mlp_formula/test/scores.pt",
             ),
             "mlp_laplace": ModelSource(
                 "mlp_laplace", "mlp", "formula_official_capped",
                 self._prediction_view("laplace_mlp_formula", "test"), None,
                 checkpoints["laplace_mlp_formula"],
                 prediction_samples=50,
-                archived_test_score=self.artifacts / "results/evaluations/formula_official/laplace_mlp_formula/test/scores.pt",
+                archived_test_score=self.paper_data / "results/evaluations/formula_official/laplace_mlp_formula/test/scores.pt",
             ),
         }
         for model in models.values():
@@ -324,18 +335,21 @@ class PaperEvaluationRunner:
             raise RuntimeError(f"Command failed ({process.returncode}); see {log_path}")
 
     def sgr_seeds(self) -> List[int]:
-        return [42] if self.args.sgr_repeats == 1 else list(range(self.args.sgr_repeats))
+        return [SGR_SEED] if self.args.sgr_repeats == 1 else list(range(self.args.sgr_repeats))
 
 
     def resolved_config(self) -> dict:
         return {
-            "data_dir": str(self.data), "artifacts": str(self.artifacts), "out_dir": str(self.out), "device": self.args.device,
-            "temperature": EVALUATION_TEMPERATURE, "top_ks": TOP_KS, "candidate_seed": 42,
+            "massspecgym_data": str(self.massspecgym_data),
+            "released_data": str(self.paper_data),
+            "output": str(self.out),
+            "device": self.args.device,
+            "temperature": EVALUATION_TEMPERATURE, "top_ks": TOP_KS, "candidate_seed": CANDIDATE_SEED,
             "candidate_record_policy": "preserve", "candidate_tie_break": "source_order",
             "score_dtype": "float32", "aurc_convention": "manuscript_trapezoid_seed42",
             "feature_convention": "manuscript",
-            "bootstrap_seed": 42, "bootstrap_replicates": self.args.bootstrap_replicates,
-            "sgr_seeds": self.sgr_seeds(), "sgr_delta": 0.001,
+            "bootstrap_seed": CANDIDATE_SEED, "bootstrap_replicates": self.args.bootstrap_replicates,
+            "sgr_seeds": self.sgr_seeds(), "sgr_delta": SGR_DELTA,
             "max_queries": self.args.max_queries,
             "quick_hashes": self.args.quick_hashes,
             "requested_stages": self.args.stages,
@@ -404,7 +418,7 @@ class PaperEvaluationRunner:
             "MassSpecGym_retrieval_candidates_mass.json", "MassSpecGym_retrieval_candidates_mass_fps.npz", "MassSpecGym_retrieval_candidates_mass_inchi.npz",
         ]
         for name in names:
-            source, target = self.data / name, self.helper_dir / name
+            source, target = self.massspecgym_data / name, self.helper_dir / name
             if not source.exists():
                 raise FileNotFoundError(source)
             if target.exists() or target.is_symlink():
@@ -417,7 +431,7 @@ class PaperEvaluationRunner:
         self, setting: str, rows: pd.DataFrame,
         target_column: str = "precomputed_molecule_group_id",
     ) -> Dict[tuple, bool]:
-        path = self.data / f"MassSpecGym_retrieval_candidates_{setting}_inchi.npz"
+        path = self.massspecgym_data / f"MassSpecGym_retrieval_candidates_{setting}_inchi.npz"
         result = {}
         with np.load(path) as candidates:
             for smiles, group in rows.groupby("smiles", sort=False):
@@ -434,11 +448,14 @@ class PaperEvaluationRunner:
             self.input_hashes = dict(zip(hashes.path, hashes.sha256))
             return
         self.link_helpers()
-        dataset_path = self.data / "MassSpecGym.tsv"
+        dataset_path = self.massspecgym_data / "MassSpecGym.tsv"
         metadata = pd.read_csv(dataset_path, sep="\t")
         metadata["query_id"] = metadata["identifier"].astype(str)
         metadata["molecule_group_id"] = metadata["inchikey"].map(normalize_inchikey)
-        expected = {"train": (194119, 22746), "val": (19429, 3185), "test": (17556, 2998)}
+        expected = {
+            split: (int(values["spectra"]), int(values["molecules"]))
+            for split, values in FOLD_CONFIG.items()
+        }
         for split, (n_spectra, n_molecules) in expected.items():
             subset = metadata[metadata.fold == split]
             observed = (len(subset), subset.molecule_group_id.nunique())
@@ -450,7 +467,7 @@ class PaperEvaluationRunner:
         if any(group_sets[a] & group_sets[b] for a, b in [("train", "val"), ("train", "test"), ("val", "test")]):
             raise ValueError("Molecule groups overlap official folds")
 
-        precomputed = np.load(self.data / "inchis.npy")
+        precomputed = np.load(self.massspecgym_data / "inchis.npy")
         precomputed_ids = np.asarray([normalize_inchikey(value) for value in precomputed], dtype=object)
         metadata["precomputed_molecule_group_id"] = precomputed_ids
         metadata["identity_mismatch"] = metadata.molecule_group_id.to_numpy() != precomputed_ids
@@ -492,9 +509,9 @@ class PaperEvaluationRunner:
 
         prediction_specs = []
         for model in self.models.values():
-            prediction_specs.append((model.test_pred_dir / "fp_probs.pt", 17556, model.prediction_samples))
+            prediction_specs.append((model.test_pred_dir / "fp_probs.pt", expected["test"][0], model.prediction_samples))
             if model.val_pred_dir is not None:
-                prediction_specs.append((model.val_pred_dir / "fp_probs.pt", 19429, model.prediction_samples))
+                prediction_specs.append((model.val_pred_dir / "fp_probs.pt", expected["val"][0], model.prediction_samples))
         for path, expected_rows, expected_samples in prediction_specs:
             data = torch.load(path, map_location="cpu", mmap=True)
             stack = data["stack"] if isinstance(data, dict) else data
@@ -506,11 +523,11 @@ class PaperEvaluationRunner:
             del data, stack
 
         input_paths = [
-            dataset_path, self.data / "fp_4096.npy", self.data / "inchis.npy",
-            self.data / "massspecgym_118m_mira.json",
+            dataset_path, self.massspecgym_data / "fp_4096.npy", self.massspecgym_data / "inchis.npy",
+            self.massspecgym_data / "massspecgym_118m_mira.json",
         ]
         for setting in ["formula", "formula_uncapped", "mass"]:
-            input_paths.extend(self.data / f"MassSpecGym_retrieval_candidates_{setting}{suffix}" for suffix in [".json", "_fps.npz", "_inchi.npz"])
+            input_paths.extend(self.massspecgym_data / f"MassSpecGym_retrieval_candidates_{setting}{suffix}" for suffix in [".json", "_fps.npz", "_inchi.npz"])
         input_paths.extend(path for path, _, _ in prediction_specs)
         input_paths.extend(model.test_pred_dir / "ranker.pt" for model in self.models.values())
         input_paths.extend(path for model in self.models.values() for path in model.checkpoint_files)
@@ -543,13 +560,13 @@ class PaperEvaluationRunner:
             return
         self.link_helpers()
         build_record_preserving_formula_cap(
-            self.data / "MassSpecGym.tsv",
-            self.data / "MassSpecGym_retrieval_candidates_formula_uncapped.json",
-            self.data / "MassSpecGym_retrieval_candidates_formula_uncapped_fps.npz",
-            self.data / "MassSpecGym_retrieval_candidates_formula_uncapped_inchi.npz",
-            self.data / "inchis.npy",
+            self.massspecgym_data / "MassSpecGym.tsv",
+            self.massspecgym_data / "MassSpecGym_retrieval_candidates_formula_uncapped.json",
+            self.massspecgym_data / "MassSpecGym_retrieval_candidates_formula_uncapped_fps.npz",
+            self.massspecgym_data / "MassSpecGym_retrieval_candidates_formula_uncapped_inchi.npz",
+            self.massspecgym_data / "inchis.npy",
             self.helper_dir,
-            cap=256, seed=42, max_queries=self.args.max_queries,
+            cap=256, seed=CANDIDATE_SEED, max_queries=self.args.max_queries,
             write_manifest=self.args.write_candidate_manifest and self.args.max_queries is None,
         )
         self.mark_stage("candidates", outputs)
@@ -597,7 +614,8 @@ class PaperEvaluationRunner:
             stack = bundle.get("scores_stack_flat")
             ptr = bundle["ptr"].long()
             labels = bundle["labels_flat"]
-            expected_queries = min(self.args.max_queries or 17556, 17556)
+            n_test = int(FOLD_CONFIG["test"]["spectra"])
+            expected_queries = min(self.args.max_queries or n_test, n_test)
             if stack is None or tuple(stack.shape) != (model.prediction_samples, int(ptr[-1])):
                 return False
             if ptr.numel() - 1 != expected_queries or labels.numel() != int(ptr[-1]):
@@ -640,9 +658,9 @@ class PaperEvaluationRunner:
                 if output.is_symlink():
                     output.unlink()
                 self.run_command("scores", cell.name + "__archived_prefix", [
-                    self.python, self.repo / "scripts/canonicalize_score_bundle.py",
+                    self.python, "-m", "ms_uq.paper.score_bundles",
                     "--input", source, "--output", output,
-                    "--dataset_tsv", self.data / "MassSpecGym.tsv",
+                    "--dataset_tsv", self.massspecgym_data / "MassSpecGym.tsv",
                     "--helper_dir", self.helper_dir, "--candidate_setting", "formula",
                     "--split", "test", "--record_policy", "preserve",
                     "--label_mode", "fingerprint", "--query_identity_source", "precomputed",
@@ -698,8 +716,8 @@ class PaperEvaluationRunner:
             raw_compatible = self._raw_score_compatible(raw_score, cell)
             if not raw_compatible or "scores" in self.force_stages:
                 command = [
-                    self.python, self.repo / "scripts/prepare_split_scores.py",
-                    "--dataset_tsv", self.data / "MassSpecGym.tsv", "--helper_dir", cell_helpers,
+                    self.python, "-m", "ms_uq.paper.inference",
+                    "--dataset_tsv", self.massspecgym_data / "MassSpecGym.tsv", "--helper_dir", cell_helpers,
                     "--pred_dir", pred_dir, "--out_dir", raw_dir, "--split", cell.split,
                     "--architecture", model.architecture, "--candidate_setting", cell.helper_setting,
                     "--label_mode", "fingerprint" if cell.helper_setting == "formula" else "inchikey",
@@ -717,9 +735,9 @@ class PaperEvaluationRunner:
             if not evaluation_compatible or "scores" in self.force_stages:
                 label_mode = "fingerprint" if cell.helper_setting == "formula" else "inchikey"
                 self.run_command("scores", cell.name + "__records", [
-                    self.python, self.repo / "scripts/canonicalize_score_bundle.py",
+                    self.python, "-m", "ms_uq.paper.score_bundles",
                     "--input", raw_score, "--output", evaluation_bundle,
-                    "--dataset_tsv", self.data / "MassSpecGym.tsv", "--helper_dir", cell_helpers,
+                    "--dataset_tsv", self.massspecgym_data / "MassSpecGym.tsv", "--helper_dir", cell_helpers,
                     "--candidate_setting", cell.helper_setting, "--split", cell.split,
                     "--record_policy", "preserve", "--label_mode", label_mode,
                     "--query_identity_source", "precomputed",
@@ -746,9 +764,9 @@ class PaperEvaluationRunner:
             cell_helpers = self.cell_helper_dir(cell)
             pred_dir = model.val_pred_dir if cell.split == "val" else model.test_pred_dir
             command = [
-                self.python, self.repo / "scripts/compile_paper_scores.py",
+                self.python, "-m", "ms_uq.paper.scores",
                 "--score", self.evaluation_score(cell), "--fp_probs", pred_dir / "fp_probs.pt",
-                "--dataset_tsv", self.data / "MassSpecGym.tsv", "--helper_dir", cell_helpers,
+                "--dataset_tsv", self.massspecgym_data / "MassSpecGym.tsv", "--helper_dir", cell_helpers,
                 "--candidate_setting", cell.helper_setting, "--split", cell.split, "--out", output,
                 "--run_id", self.out.name, "--run_label", cell.model,
                 "--architecture", model.architecture,
@@ -786,14 +804,15 @@ class PaperEvaluationRunner:
         mlp = self.score_dir(self._cell("mlp_formula", "test", "formula_official_capped"))
         transformer = self.score_dir(self._cell("transformer_formula", "test", "formula_official_capped"))
         self.run_command("temperature", "formula_ensembles", [
-            self.python, self.repo / "scripts/run_temperature_sensitivity.py",
+            self.python, "-m", "ms_uq.paper.temperature",
             "--model", f"mlp={mlp}", "--model", f"transformer={transformer}",
-            "--score_filename", "record_scores.pt", "--dataset_tsv", self.data / "MassSpecGym.tsv",
+            "--score_filename", "record_scores.pt", "--dataset_tsv", self.massspecgym_data / "MassSpecGym.tsv",
             "--helper_dir", self.helper_dir, "--candidate_setting", "formula", "--out_dir", out_dir,
             "--candidate_record_policy", "preserve", "--candidate_tie_break", "source_order",
             "--aurc_convention", "manuscript_trapezoid_seed42",
             "--feature_convention", "manuscript",
-            "--rankwise_temp", str(EVALUATION_TEMPERATURE), "--temperatures", "0.001", "0.003", "0.01", "0.03", "0.1", "0.3", "1.0",
+            "--rankwise_temp", str(EVALUATION_TEMPERATURE),
+            "--temperatures", *map(str, TEMPERATURE_GRID),
             *(["--max_queries", str(self.args.max_queries)] if self.args.max_queries is not None else []),
         ])
         self.mark_stage("temperature", [output, out_dir / "temperature_sensitivity_rel_aurc.pdf"])
@@ -821,8 +840,8 @@ class PaperEvaluationRunner:
                 if prediction_output.exists() and "meta" not in self.force_stages:
                     continue
                 command = [
-                    self.python, self.repo / "scripts/run_meta_score_analysis.py",
-                    "--model_label", model_name, "--dataset_tsv", self.data / "MassSpecGym.tsv",
+                    self.python, "-m", "ms_uq.paper.meta",
+                    "--model_label", model_name, "--dataset_tsv", self.massspecgym_data / "MassSpecGym.tsv",
                     "--helper_dir", self.helper_dir, "--candidate_setting", "formula",
                     "--val_score", self.evaluation_score(val_cell), "--val_fp_probs", model.val_pred_dir / "fp_probs.pt",
                     "--test_score", self.evaluation_score(test_cell), "--test_fp_probs", model.test_pred_dir / "fp_probs.pt",
@@ -830,7 +849,7 @@ class PaperEvaluationRunner:
                     "--candidate_record_policy", "preserve", "--candidate_tie_break", "source_order",
                     "--aurc_convention", "manuscript_trapezoid_seed42",
                     "--feature_convention", "manuscript",
-                    "--cv_fold_assignments", fold_map, "--delta", "0.001",
+                    "--cv_fold_assignments", fold_map, "--delta", str(SGR_DELTA),
                     "--target_risks", *map(str, TARGET_RISKS),
                 ]
                 if self.args.max_queries is not None:
@@ -864,7 +883,7 @@ class PaperEvaluationRunner:
             return
         scores = self.combined_query_scores()
         out_dir.mkdir(parents=True, exist_ok=True)
-        run_sgr_stability(scores, out_dir, seeds=self.sgr_seeds(), target_risks=TARGET_RISKS, delta=0.001)
+        run_sgr_stability(scores, out_dir, seeds=self.sgr_seeds(), target_risks=TARGET_RISKS, delta=SGR_DELTA)
         thresholds = pd.read_csv(out_dir / "sgr_thresholds.csv")
         evaluation = pd.read_csv(out_dir / "sgr_evaluation.csv")
         seed42 = thresholds[thresholds.seed == 42].merge(
@@ -885,12 +904,12 @@ class PaperEvaluationRunner:
         if self.stage_complete("bootstrap", outputs):
             print("[bootstrap] using cached clustered intervals")
             return
-        command = [self.python, self.repo / "scripts/aggregate_paper_results.py"]
+        command = [self.python, "-m", "ms_uq.paper.aggregate"]
         for cell in self.cells:
             command.extend(["--query_score", self.query_score_path(cell)])
         for run_label, output_name, path in self.meta_specs():
             command.extend(["--meta", f"{run_label},{output_name}={path}"])
-        command.extend(["--out_dir", out_dir, "--bootstrap_replicates", str(self.args.bootstrap_replicates), "--bootstrap_seed", "42"])
+        command.extend(["--out_dir", out_dir, "--bootstrap_replicates", str(self.args.bootstrap_replicates), "--bootstrap_seed", str(CANDIDATE_SEED)])
         self.run_command("bootstrap", "canonical_results", command)
         self.mark_stage("bootstrap", outputs)
 
@@ -913,25 +932,25 @@ class PaperEvaluationRunner:
             print("[figures] using cached paper figures")
             return
         self.run_command("figures", "meta_joint", [
-            self.python, self.repo / "scripts/plot_meta_joint_results.py",
+            self.python, "-m", "ms_uq.paper.meta_figures",
             "--query_scores", self.out / "results/query_scores.parquet",
             "--out_dir", self.out / "figures/meta",
         ])
         self.run_command("figures", "candidate_histograms", [
-            self.python, self.repo / "scripts/build_candidate_pool_appendix.py",
-            "--dataset_tsv", self.data / "MassSpecGym.tsv", "--helper_dir", self.helper_dir,
+            self.python, "-m", "ms_uq.paper.candidate_figures",
+            "--dataset_tsv", self.massspecgym_data / "MassSpecGym.tsv", "--helper_dir", self.helper_dir,
             "--out_dir", self.out / "figures/candidates", "--distributions_only",
             *(["--max_queries", str(self.args.max_queries)] if self.args.max_queries is not None else []),
         ])
         self.run_command("figures", "candidate_size_stratification", [
-            self.python, self.repo / "scripts/plot_candidate_size_stratification.py",
+            self.python, "-m", "ms_uq.paper.candidate_size_figure",
             "--query_scores", self.out / "results/query_scores.parquet",
             "--out_path", self.out / "figures/candidates/candidate_size_stratification.pdf",
             "--run_label", "mlp_formula",
         ])
         for run_label in ["mlp_formula", "transformer_formula"]:
             self.run_command("figures", "sgr_seed42__" + run_label, [
-                self.python, self.repo / "scripts/plot_sgr_analysis.py",
+                self.python, "-m", "ms_uq.paper.sgr_figures",
                 "--sgr_csv", self.out / "sgr/sgr_results_seed42.csv",
                 "--out_path", self.out / f"figures/sgr_coverage_{run_label}_seed42.pdf",
                 "--run_label", run_label,
@@ -961,7 +980,7 @@ class PaperEvaluationRunner:
             print("[report] using cached static report")
             return
         self.run_command("report", "html", [
-            self.python, self.repo / "scripts/build_paper_report.py",
+            self.python, "-m", "ms_uq.paper.html_report",
             "--source-dir", self.out, "--out-dir", self.out / "report",
         ])
         self.mark_stage("report", [output])
@@ -988,7 +1007,7 @@ class PaperEvaluationRunner:
             self.out / "report/index.html",
         ]
         missing = [str(path) for path in required if not path.exists()]
-        add("all required artifacts exist", not missing, missing)
+        add("all required outputs exist", not missing, missing)
         scores = pd.read_parquet(self.out / "results/query_scores.parquet")
         official = scores[(scores.split == "test") & (scores.evaluation_candidate_setting == "formula_official_capped")]
         official_counts = {
@@ -997,7 +1016,13 @@ class PaperEvaluationRunner:
         }
         add(
             "official formula test has 17,556 spectra per K/model",
-            all(len(group) == min(self.args.max_queries or 17556, 17556) for _, group in official.groupby(["run_label", "K"])),
+            all(
+                len(group) == min(
+                    self.args.max_queries or int(FOLD_CONFIG["test"]["spectra"]),
+                    int(FOLD_CONFIG["test"]["spectra"]),
+                )
+                for _, group in official.groupby(["run_label", "K"])
+            ),
             official_counts,
         )
         add(
@@ -1100,9 +1125,9 @@ def parse_stages(value: str) -> List[str]:
 
 
 def add_full_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--data-dir", type=Path, default=Path("data"))
-    parser.add_argument("--artifacts", type=Path, default=Path("artifacts"))
-    parser.add_argument("--out-dir", type=Path, default=Path("outputs/paper_run"))
+    parser.add_argument("--massspecgym-data", type=Path, required=True)
+    parser.add_argument("--data", type=Path, default=Path("data"))
+    parser.add_argument("--output", type=Path, default=Path("outputs/evaluation"))
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--stages", type=parse_stages, default=["all"])
     parser.add_argument("--force-stage", action="append", default=[], choices=STAGES)
@@ -1124,30 +1149,26 @@ def add_full_arguments(parser: argparse.ArgumentParser) -> None:
                         help="Retain temporary pre-provenance score bundles (roughly doubles score storage)")
 
 
-def _artifact_results(path: Path) -> Path:
+def _result_dir(path: Path) -> Path:
     path = path.resolve()
     return path / "results" if (path / "results").is_dir() else path
 
 
-def report_from_artifacts(artifacts: Path, output_dir: Path) -> dict:
-    source = _artifact_results(artifacts)
+def reproduce_report(data: Path, output: Path) -> dict:
+    source = _result_dir(data)
     report = validate_paper_results(source)
     if not report["passed"]:
         raise RuntimeError("Packaged paper results failed validation")
-    output_dir = output_dir.resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
-    for name in ["numerical", "analyses", "figures", "tables", "provenance"]:
-        source_dir = source / name
-        if source_dir.is_dir():
-            shutil.copytree(source_dir, output_dir / name, dirs_exist_ok=True)
+    output = output.resolve()
+    output.mkdir(parents=True, exist_ok=True)
     subprocess.run([
-        sys.executable, str(Path(__file__).with_name("build_paper_report.py")),
-        "--source-dir", str(output_dir), "--out-dir", str(output_dir / "report"),
+        sys.executable, "-m", "ms_uq.paper.html_report",
+        "--source-dir", str(source), "--out-dir", str(output),
     ], check=True)
-    reproduced_hash = hashlib.sha256((output_dir / "numerical/metrics.csv").read_bytes()).hexdigest()
+    reproduced_hash = hashlib.sha256((source / "numerical/metrics.csv").read_bytes()).hexdigest()
     return {
         **report,
-        "report_output": str(output_dir / "report/index.html"),
+        "report_output": str(output / "index.html"),
         "reproduced_metrics_sha256": reproduced_hash,
         "reproduced_metrics_equal": reproduced_hash == report["metrics_sha256"],
     }
@@ -1159,17 +1180,17 @@ def main() -> None:
     full = commands.add_parser("full", help="Run all candidate rescoring and paper analyses")
     add_full_arguments(full)
     report_parser = commands.add_parser("report", help="Reproduce the report from released results without MassSpecGym data")
-    report_parser.add_argument("--artifacts", type=Path, default=Path("artifacts"))
-    report_parser.add_argument("--output-dir", type=Path, default=Path("outputs/paper_results_reproduced"))
+    report_parser.add_argument("--data", type=Path, default=Path("data"))
+    report_parser.add_argument("--output", type=Path, default=Path("outputs/report"))
     validate_parser = commands.add_parser("validate", help="Validate released results without recomputing inference")
-    validate_parser.add_argument("--artifacts", type=Path, default=Path("artifacts"))
+    validate_parser.add_argument("--data", type=Path, default=Path("data"))
     args = parser.parse_args()
     if args.command == "report":
-        result = report_from_artifacts(args.artifacts, args.output_dir)
+        result = reproduce_report(args.data, args.output)
         print(json.dumps(result, indent=2))
         return
     if args.command == "validate":
-        result = validate_paper_results(_artifact_results(args.artifacts))
+        result = validate_paper_results(_result_dir(args.data))
         print(json.dumps(result, indent=2))
         if not result["passed"]:
             raise SystemExit(1)

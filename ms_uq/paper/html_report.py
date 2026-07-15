@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from datetime import datetime, timezone
 from html import escape
 from pathlib import Path
@@ -13,7 +14,7 @@ import pandas as pd
 
 
 def _relative(target: Path, report_dir: Path) -> str:
-    return escape(str(target.resolve().relative_to(report_dir.resolve().parent)))
+    return escape(os.path.relpath(target.resolve(), start=report_dir.resolve()))
 
 
 def _table(path: Path, report_dir: Path, limit: int | None = None) -> str:
@@ -22,7 +23,7 @@ def _table(path: Path, report_dir: Path, limit: int | None = None) -> str:
     frame = pd.read_csv(path)
     if limit is not None:
         frame = frame.head(limit)
-    href = "../" + _relative(path, report_dir)
+    href = _relative(path, report_dir)
     return f"<p><a href='{href}'>{escape(path.name)}</a></p>" + frame.to_html(
         classes="data", border=0, index=False, float_format=lambda value: f"{value:.4f}",
     )
@@ -32,7 +33,7 @@ def _links(paths: Iterable[Path], report_dir: Path) -> str:
     rows = []
     for path in paths:
         if path.is_file():
-            href = "../" + _relative(path, report_dir)
+            href = _relative(path, report_dir)
             rows.append(f"<li><a href='{href}'>{escape(str(path.name))}</a></li>")
     return "<ul>" + "\n".join(rows) + "</ul>"
 
@@ -40,9 +41,9 @@ def _links(paths: Iterable[Path], report_dir: Path) -> str:
 def _figure(path: Path, report_dir: Path, caption: str) -> str:
     if not path.is_file():
         return f"<p class='missing'>Missing image: {escape(str(path))}</p>"
-    href = "../" + _relative(path, report_dir)
+    href = _relative(path, report_dir)
     pdf = path.with_suffix(".pdf")
-    pdf_link = f" <a href='../{_relative(pdf, report_dir)}'>PDF</a>" if pdf.is_file() else ""
+    pdf_link = f" <a href='{_relative(pdf, report_dir)}'>PDF</a>" if pdf.is_file() else ""
     return (
         "<figure>"
         f"<a href='{href}'><img src='{href}' alt='{escape(caption)}'></a>"

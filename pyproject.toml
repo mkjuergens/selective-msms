@@ -43,7 +43,7 @@ dev = [
 [project.urls]
 Repository = "https://github.com/BioML-UGent/selective-msms"
 Paper = "https://arxiv.org/abs/2603.10950"
-Artifacts = "https://doi.org/10.5281/zenodo.19108280"
+Data = "https://doi.org/10.5281/zenodo.19108280"
 
 [tool.setuptools.packages.find]
 include = ["ms_uq*"]

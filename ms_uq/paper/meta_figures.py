@@ -77,13 +77,13 @@ MANUSCRIPT_MEASURES = [
 DEFAULT_MODELS = {
     "mlp": {
         "label": "MLP ensemble",
-        "eval_dir": Path("artifacts/results/evaluations/formula_official/ensemble_mlp_formula/test"),
-        "meta_dir": Path("artifacts/results/analyses/meta_models/mlp_formula/full"),
+        "eval_dir": Path("data/results/evaluations/formula_official/ensemble_mlp_formula/test"),
+        "meta_dir": Path("data/results/analyses/meta_models/mlp_formula/full"),
     },
     "transformer": {
         "label": "Transformer ensemble",
-        "eval_dir": Path("artifacts/results/evaluations/formula_official/ensemble_transformer_formula/test"),
-        "meta_dir": Path("artifacts/results/analyses/meta_models/transformer_formula/full"),
+        "eval_dir": Path("data/results/evaluations/formula_official/ensemble_transformer_formula/test"),
+        "meta_dir": Path("data/results/analyses/meta_models/transformer_formula/full"),
     },
 }
 

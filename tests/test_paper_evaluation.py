@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import numpy as np
@@ -17,7 +18,7 @@ from ms_uq.utils import resolve_candidate_paths
 
 
 def test_release_readme_records_reserved_doi_and_source_commit():
-    from ms_uq.evaluation.artifacts import _release_readme, artifact_doi
+    from ms_uq.paper.release import _release_readme, zenodo_doi
 
     config = {
         "paper": {
@@ -28,16 +29,16 @@ def test_release_readme_records_reserved_doi_and_source_commit():
     }
     source_commit = "a" * 40
     text = _release_readme(config, source_commit)
-    assert artifact_doi(config) == "10.5281/zenodo.19108280"
+    assert zenodo_doi(config) == "10.5281/zenodo.19108280"
     assert "https://doi.org/10.5281/zenodo.19108280" in text
     assert source_commit in text
 
 
 def test_release_requires_a_reserved_zenodo_doi():
-    from ms_uq.evaluation.artifacts import artifact_doi
+    from ms_uq.paper.release import zenodo_doi
 
     with pytest.raises(ValueError, match="reserved Zenodo DOI"):
-        artifact_doi({"paper": {"zenodo_doi": None}})
+        zenodo_doi({"paper": {"zenodo_doi": None}})
 
 
 def test_sgr_split_is_deterministic_and_disjoint():
@@ -50,7 +51,7 @@ def test_sgr_split_is_deterministic_and_disjoint():
 
 
 def test_sgr_exports_all_manuscript_single_score_curves(tmp_path: Path):
-    from ms_uq.evaluation.paper_reporting import SGR_SINGLE_MEASURES, run_sgr_stability
+    from ms_uq.paper.reporting import SGR_SINGLE_MEASURES, run_sgr_stability
 
     rows = []
     for run_label in ["mlp_formula", "transformer_formula"]:
@@ -83,7 +84,7 @@ def test_sgr_exports_all_manuscript_single_score_curves(tmp_path: Path):
     result = pd.read_csv(tmp_path / "sgr_evaluation.csv")
     observed = result.groupby(["run_label", "K"])["measure"].agg(set)
     assert all(set(SGR_SINGLE_MEASURES) <= measures for measures in observed)
-    from scripts.plot_sgr_analysis import plot_sgr_coverage
+    from ms_uq.paper.sgr_figures import plot_sgr_coverage
 
     plot_input = result.assign(
         loss=result["K"].map(lambda k: f"hit@{k}"),
@@ -142,25 +143,6 @@ def test_candidate_fps_to_dense_accepts_dense_and_packed():
     assert np.array_equal(unpacked, dense)
 
 
-def test_build_candidate_json_from_npz_tiny(tmp_path: Path):
-    from scripts.build_candidate_json_from_npz import build_compat_candidate_json
-
-    inchi_path = tmp_path / "MassSpecGym_retrieval_candidates_mass_inchi.npz"
-    np.savez(
-        inchi_path,
-        CCO=np.asarray(["A", "B"]),
-        CCN=np.asarray(["C"]),
-    )
-    out_path = tmp_path / "MassSpecGym_retrieval_candidates_mass.json"
-    candidate_map = build_compat_candidate_json(inchi_path, out_path)
-
-    assert out_path.exists()
-    assert list(candidate_map) == ["CCO", "CCN"]
-    assert [len(v) for v in candidate_map.values()] == [2, 1]
-    with pytest.raises(FileExistsError):
-        build_compat_candidate_json(inchi_path, out_path)
-
-
 def test_formula_uncapped_path_resolution(tmp_path: Path):
     names = [
         "MassSpecGym_retrieval_candidates_formula_uncapped.json",
@@ -173,23 +155,9 @@ def test_formula_uncapped_path_resolution(tmp_path: Path):
     assert [p.name for p in resolved] == names
 
 
-def test_build_candidate_helpers_tiny_json(tmp_path: Path):
-    pytest.importorskip("rdkit")
-    from scripts.build_candidate_helpers import build_candidate_arrays, normalize_candidate_map, output_paths
-
-    raw = {"CCO": ["CCO", "CC"]}
-    cmap = normalize_candidate_map(raw)
-    fps, inchis = build_candidate_arrays(cmap, fp_size=128)
-    assert fps["CCO"].shape == (2, 128)
-    assert inchis["CCO"].shape == (2,)
-    fp_path, inchi_path = output_paths(tmp_path / "MassSpecGym_retrieval_candidates_formula_uncapped.json")
-    assert fp_path.name == "MassSpecGym_retrieval_candidates_formula_uncapped_fps.npz"
-    assert inchi_path.name == "MassSpecGym_retrieval_candidates_formula_uncapped_inchi.npz"
-
-
 def test_prepare_uncapped_helpers_rekeys_packs_and_preserves_order(tmp_path: Path):
     pytest.importorskip("rdkit")
-    from scripts.prepare_uncapped_formula_test import (
+    from scripts.prepare_uncapped_candidates import (
         build_shards,
         consolidate_shards,
         inchikey_2d,
@@ -243,7 +211,7 @@ def test_biencoder_cosine_matrix_matches_pairwise_cosine():
 
 
 def test_meta_training_grouped_cv_smoke():
-    from scripts.run_meta_score_analysis import train_meta_model
+    from ms_uq.paper.meta import train_meta_model
 
     rng = np.random.default_rng(0)
     X = rng.normal(size=(60, 4))
@@ -309,7 +277,7 @@ def test_canonical_temperature_features_are_confidence_oriented():
 
 
 def test_meta_pipeline_has_no_imputer_and_uses_strict_logistic_settings():
-    from scripts.run_meta_score_analysis import make_pipeline
+    from ms_uq.paper.meta import make_pipeline
 
     pipeline = make_pipeline(meta_model="logistic")
     assert list(pipeline.named_steps) == ["scaler", "logreg"]
@@ -355,7 +323,7 @@ def test_record_candidate_cap_keeps_all_records_when_pool_is_under_cap():
 
 
 def test_preserve_score_bundle_keeps_order_duplicates_and_float32(tmp_path: Path):
-    from scripts.canonicalize_score_bundle import preserve_score_bundle
+    from ms_uq.paper.score_bundles import preserve_score_bundle
 
     metadata = pd.DataFrame([{
         "identifier": "q1", "smiles": "query", "inchikey": "TARGET-AA", "fold": "test",
@@ -397,7 +365,7 @@ def test_preserve_score_bundle_keeps_order_duplicates_and_float32(tmp_path: Path
 
 
 def test_preserve_score_bundle_can_materialize_prefix(tmp_path: Path):
-    from scripts.canonicalize_score_bundle import preserve_score_bundle
+    from ms_uq.paper.score_bundles import preserve_score_bundle
 
     metadata = pd.DataFrame([
         {"identifier": "q1", "smiles": "query", "inchikey": "TARGET-AA", "fold": "test"},
@@ -455,8 +423,8 @@ def test_chunked_bitwise_uncertainties_match_full_computation():
 
 
 def test_paper_figures_exclude_normalized_entropy_and_include_bitwise_aleatoric():
-    from scripts.plot_meta_joint_results import MANUSCRIPT_MEASURES
-    from scripts.run_temperature_sensitivity import _metric_order
+    from ms_uq.paper.meta_figures import MANUSCRIPT_MEASURES
+    from ms_uq.paper.temperature import _metric_order
 
     assert "normalized_entropy" not in MANUSCRIPT_MEASURES
     assert "normalized_entropy" not in _metric_order(5)
@@ -523,7 +491,7 @@ def test_record_formula_cap_builder_preserves_selected_source_order(tmp_path: Pa
 
 
 def test_paper_runner_expands_downstream_stage_dependencies():
-    from scripts.run_paper_evaluation import STAGES, expand_stage_dependencies
+    from ms_uq.paper.runner import STAGES, expand_stage_dependencies
 
     assert expand_stage_dependencies(["metrics"]) == [
         "preflight", "candidates", "scores", "metrics",
@@ -540,14 +508,12 @@ def test_canonical_temperature_matches_rankwise_training_temperature():
     from ms_uq.inference.retrieve import ragged_softmax, scores_from_loader
     from ms_uq.unc_measures.eval_measures import compute_uncertainties
     from ms_uq.unc_measures.retrieval_unc import RetrievalUncertainty
-    from scripts.run_evaluation import EvalConfig
-    from scripts.run_paper_evaluation import EVALUATION_TEMPERATURE
-    from scripts.run_sgr_evaluation import SGRConfig
+    from ms_uq.paper.evaluation import EvalConfig
+    from ms_uq.paper.runner import EVALUATION_TEMPERATURE
 
     expected = 0.003
     assert EVALUATION_TEMPERATURE == pytest.approx(expected)
     assert EvalConfig().temperature == pytest.approx(expected)
-    assert SGRConfig().temperature == pytest.approx(expected)
     assert inspect.signature(compute_score_statistics).parameters["temperature"].default == pytest.approx(expected)
     assert inspect.signature(scores_from_loader).parameters["temperature"].default == pytest.approx(expected)
     assert inspect.signature(ragged_softmax).parameters["temperature"].default == pytest.approx(expected)
@@ -580,14 +546,14 @@ def test_candidate_size_summary_preserves_record_counts():
     assert summary["fraction_equal_256"] == pytest.approx(0.5)
 
 
-def test_release_zip_is_deterministic_and_confined_to_artifacts(tmp_path):
+def test_release_zip_is_deterministic_and_confined_to_data(tmp_path):
     import zipfile
 
-    from ms_uq.evaluation.artifacts import _write_zip, sha256
+    from ms_uq.paper.release import _write_zip, sha256
 
     source = tmp_path / "payload.bin"
-    source.write_bytes(b"paper artifact\n")
-    members = [(source, "artifacts/results/payload.bin", "result", "", "")]
+    source.write_bytes(b"paper data\n")
+    members = [(source, "data/results/payload.bin", "result", "", "")]
     first = tmp_path / "first.zip"
     second = tmp_path / "second.zip"
     first_manifest = _write_zip(first, members)
@@ -595,14 +561,65 @@ def test_release_zip_is_deterministic_and_confined_to_artifacts(tmp_path):
     assert sha256(first) == sha256(second)
     assert first_manifest[0].sha256 == sha256(source)
     with zipfile.ZipFile(first) as archive:
-        assert archive.namelist() == ["artifacts/results/payload.bin"]
+        assert archive.namelist() == ["data/results/payload.bin"]
         assert archive.testzip() is None
 
 
 def test_release_zip_rejects_unsafe_member_path(tmp_path):
-    from ms_uq.evaluation.artifacts import _write_zip
+    from ms_uq.paper.release import _write_zip
 
     source = tmp_path / "payload.bin"
     source.write_bytes(b"x")
     with pytest.raises(ValueError, match="Unsafe archive path"):
         _write_zip(tmp_path / "bad.zip", [(source, "../payload.bin", "result", "", "")])
+
+
+def test_release_sources_are_loaded_from_data_indexes(tmp_path: Path):
+    from ms_uq.paper.release import discover_release_sources, sha256
+
+    models = tmp_path / "models"
+    prediction_rows = []
+    prediction_roles = [
+        ("ensemble_mlp_formula", "test"),
+        ("ensemble_mlp_formula", "validation"),
+        ("ensemble_transformer_formula", "test"),
+        ("ensemble_transformer_formula", "validation"),
+        ("ensemble_mlp_mass", "test"),
+        ("mc_dropout_mlp_formula", "test"),
+        ("laplace_mlp_formula", "test"),
+    ]
+    for index, (model, split) in enumerate(prediction_roles):
+        path = models / model / "predictions" / split / "fp_probs.pt"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(f"prediction-{index}".encode())
+        prediction_rows.append({
+            "model": model,
+            "split": split,
+            "path": path.relative_to(tmp_path).as_posix(),
+            "size_bytes": path.stat().st_size,
+            "sha256": sha256(path),
+        })
+    (models / "predictions.json").write_text(json.dumps(prediction_rows))
+
+    checkpoint_rows = []
+    for index in range(18):
+        model = f"model_{index // 5}"
+        path = models / model / "checkpoints" / f"member_{index:02d}.ckpt"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(f"checkpoint-{index}".encode())
+        checkpoint_rows.append({
+            "model": model,
+            "member": index + 1,
+            "path": path.relative_to(tmp_path).as_posix(),
+            "size_bytes": path.stat().st_size,
+            "sha256": sha256(path),
+        })
+    pd.DataFrame(checkpoint_rows).to_csv(models / "checkpoints.tsv", sep="\t", index=False)
+    (models / "shared").mkdir()
+    (models / "shared/ranker.pt").write_bytes(b"ranker")
+
+    predictions, checkpoints, ranker = discover_release_sources(tmp_path)
+    assert len(predictions) == 7
+    assert len(checkpoints) == 18
+    assert ranker == models / "shared/ranker.pt"
+    assert all(item["path"].is_file() for item in predictions + checkpoints)
