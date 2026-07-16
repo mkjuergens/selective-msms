@@ -74,6 +74,7 @@ class LaplaceConfig:
     tune_seed: int = 0
     out_chunk: int = 512                  # bit-chunk size for prediction
     diagnostics: bool = True              # print diagnostics after fit
+    prediction_seed: int = 42              # MC posterior-sampling seed
 
 
 # ---------------------------------------------------------------------------
@@ -344,6 +345,34 @@ class DiagLaplaceBCEHead:
             "curv_b": self.curv_b.cpu() if self.curv_b is not None else None,
         }
 
+    def load_state_dict(self, state: Dict[str, object]) -> None:
+        """Restore fitted curvature and prior parameters."""
+        curv_W = torch.as_tensor(state["curv_W"], device=self.device, dtype=torch.float32)
+        if tuple(curv_W.shape) != tuple(self.curv_W.shape):
+            raise ValueError(
+                f"Laplace weight-curvature shape {tuple(curv_W.shape)} does not match "
+                f"model head {tuple(self.curv_W.shape)}"
+            )
+        self.curv_W.copy_(curv_W)
+
+        stored_b = state.get("curv_b")
+        if self.curv_b is None:
+            if stored_b is not None:
+                raise ValueError("Laplace state has bias curvature but model head has no bias")
+        else:
+            if stored_b is None:
+                raise ValueError("Laplace state has no bias curvature for a biased model head")
+            curv_b = torch.as_tensor(stored_b, device=self.device, dtype=torch.float32)
+            if tuple(curv_b.shape) != tuple(self.curv_b.shape):
+                raise ValueError(
+                    f"Laplace bias-curvature shape {tuple(curv_b.shape)} does not match "
+                    f"model head {tuple(self.curv_b.shape)}"
+                )
+            self.curv_b.copy_(curv_b)
+
+        self._fitted = True
+        self._set_prior(float(state["tau_w"]), float(state["tau_b"]))
+
     def save(self, path: Path) -> None:
         torch.save(self.state_dict(), path)
         print(f"  [Laplace] Saved state: {path}")
@@ -365,6 +394,7 @@ def generate_laplace_predictions(
     make_loaders_fn=None,
     save_ranker_fn=None,
     model_cls=None,
+    state_path: Optional[Path] = None,
 ) -> Tuple[Path, Optional[Path]]:
     """End-to-end: load model → fit Laplace → tune prior → diagnose → save predictions.
 
@@ -387,6 +417,8 @@ def generate_laplace_predictions(
         (model, path) -> bool, saves ranker if present.
     model_cls : type, optional
         Model class with .load_from_checkpoint (default: FingerprintPredicter).
+    state_path : Path, optional
+        Released fitted Laplace state. When supplied, curvature fitting and prior tuning are skipped.
     """
     cfg = cfg or LaplaceConfig()
     out_dir = Path(out_dir)
@@ -418,29 +450,38 @@ def generate_laplace_predictions(
     # Build Laplace
     laplace = DiagLaplaceBCEHead(model, device=device, cfg=cfg)
 
-    # Ensure train loader exists
-    if train_loader is None:
-        assert make_loaders_fn, "Need train_loader or make_loaders_fn"
-        train_loader, val_loader_new, _ = make_loaders_fn()
-        if val_loader is None:
-            val_loader = val_loader_new
+    if state_path is not None:
+        state_path = Path(state_path)
+        if not state_path.is_file():
+            raise FileNotFoundError(state_path)
+        print(f"  [Laplace] Loading fitted state: {state_path}")
+        laplace.load_state_dict(torch.load(state_path, map_location=device))
+    else:
+        if train_loader is None:
+            assert make_loaders_fn, "Need train_loader or make_loaders_fn"
+            train_loader, val_loader_new, _ = make_loaders_fn()
+            if val_loader is None:
+                val_loader = val_loader_new
 
-    # Fit
-    print("  [Laplace] Fitting curvature...")
-    laplace.fit(train_loader)
-
-    # Tune prior
-    if cfg.tune_prior:
-        print(f"  [Laplace] Tuning prior ({cfg.tune_method})...")
-        tw, tb = laplace.tune_prior(val_loader)
-        print(f"  [Laplace] Best prior: tau_w={tw:.4g}, tau_b={tb:.4g}")
-
-    # Save state
-    laplace.save(laplace_path)
+        print("  [Laplace] Fitting curvature...")
+        laplace.fit(train_loader)
+        if cfg.tune_prior:
+            print(f"  [Laplace] Tuning prior ({cfg.tune_method})...")
+            tw, tb = laplace.tune_prior(val_loader)
+            print(f"  [Laplace] Best prior: tau_w={tw:.4g}, tau_b={tb:.4g}")
+        laplace.save(laplace_path)
 
     # Diagnostics
     if cfg.diagnostics:
+        torch.manual_seed(cfg.prediction_seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(cfg.prediction_seed)
         laplace.diagnostics(test_loader)
+
+    # Reset after diagnostics so they cannot alter the released sampling sequence.
+    torch.manual_seed(cfg.prediction_seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(cfg.prediction_seed)
 
     # Generate predictions
     print("  [Laplace] Generating predictions...")

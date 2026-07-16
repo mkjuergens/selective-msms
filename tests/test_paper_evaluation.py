@@ -32,6 +32,12 @@ def test_release_readme_records_reserved_doi_and_source_commit():
     assert zenodo_doi(config) == "10.5281/zenodo.19108280"
     assert "https://doi.org/10.5281/zenodo.19108280" in text
     assert source_commit in text
+    assert "predictions.zip" not in text
+    assert "scripts/evaluate.py predict" in text
+    assert "exact paper scores" in text
+    assert "Fastest Route" in text
+    assert "MassSpecGym v1" in text
+    assert "ms-mole" in text
 
 
 def test_release_requires_a_reserved_zenodo_doi():
@@ -574,33 +580,10 @@ def test_release_zip_rejects_unsafe_member_path(tmp_path):
         _write_zip(tmp_path / "bad.zip", [(source, "../payload.bin", "result", "", "")])
 
 
-def test_release_sources_are_loaded_from_data_indexes(tmp_path: Path):
-    from ms_uq.paper.release import discover_release_sources, sha256
+def test_checkpoint_sources_are_loaded_without_prediction_payloads(tmp_path: Path):
+    from ms_uq.paper.release import discover_checkpoint_sources, sha256
 
     models = tmp_path / "models"
-    prediction_rows = []
-    prediction_roles = [
-        ("ensemble_mlp_formula", "test"),
-        ("ensemble_mlp_formula", "validation"),
-        ("ensemble_transformer_formula", "test"),
-        ("ensemble_transformer_formula", "validation"),
-        ("ensemble_mlp_mass", "test"),
-        ("mc_dropout_mlp_formula", "test"),
-        ("laplace_mlp_formula", "test"),
-    ]
-    for index, (model, split) in enumerate(prediction_roles):
-        path = models / model / "predictions" / split / "fp_probs.pt"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(f"prediction-{index}".encode())
-        prediction_rows.append({
-            "model": model,
-            "split": split,
-            "path": path.relative_to(tmp_path).as_posix(),
-            "size_bytes": path.stat().st_size,
-            "sha256": sha256(path),
-        })
-    (models / "predictions.json").write_text(json.dumps(prediction_rows))
-
     checkpoint_rows = []
     for index in range(18):
         model = f"model_{index // 5}"
@@ -615,11 +598,54 @@ def test_release_sources_are_loaded_from_data_indexes(tmp_path: Path):
             "sha256": sha256(path),
         })
     pd.DataFrame(checkpoint_rows).to_csv(models / "checkpoints.tsv", sep="\t", index=False)
-    (models / "shared").mkdir()
-    (models / "shared/ranker.pt").write_bytes(b"ranker")
 
-    predictions, checkpoints, ranker = discover_release_sources(tmp_path)
-    assert len(predictions) == 7
+    checkpoints = discover_checkpoint_sources(tmp_path)
     assert len(checkpoints) == 18
-    assert ranker == models / "shared/ranker.pt"
-    assert all(item["path"].is_file() for item in predictions + checkpoints)
+    assert all(item["path"].is_file() for item in checkpoints)
+    assert not (models / "predictions.json").exists()
+    assert not (models / "shared/ranker.pt").exists()
+
+
+def test_paper_prediction_specs_cover_all_released_inference_targets(tmp_path: Path):
+    from ms_uq.paper.evaluation import (
+        PAPER_PREDICTION_SPECS,
+        missing_paper_predictions,
+        paper_prediction_path,
+    )
+
+    roles = {(spec.model, spec.output_split) for spec in PAPER_PREDICTION_SPECS}
+    assert len(PAPER_PREDICTION_SPECS) == 7
+    assert len(roles) == 7
+    assert {spec.samples for spec in PAPER_PREDICTION_SPECS} == {5, 50}
+    assert missing_paper_predictions(tmp_path) == list(PAPER_PREDICTION_SPECS)
+    first = PAPER_PREDICTION_SPECS[0]
+    output = paper_prediction_path(tmp_path, first)
+    output.parent.mkdir(parents=True)
+    output.write_bytes(b"prediction")
+    assert first not in missing_paper_predictions(tmp_path)
+
+
+def test_laplace_state_restoration_recomputes_posterior_variance():
+    from types import SimpleNamespace
+
+    from torch import nn
+
+    from ms_uq.models.laplace_bce import DiagLaplaceBCEHead
+
+    class TinyModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.mlp = nn.Linear(3, 2)
+            self.loss = SimpleNamespace(fp_pred_head=nn.Linear(2, 4))
+
+    laplace = DiagLaplaceBCEHead(TinyModel(), device="cpu")
+    state = {
+        "tau_w": 2.0,
+        "tau_b": 3.0,
+        "curv_W": torch.full((4, 2), 5.0),
+        "curv_b": torch.full((4,), 7.0),
+    }
+    laplace.load_state_dict(state)
+    assert laplace._fitted
+    assert torch.allclose(laplace.var_W, torch.full((4, 2), 1.0 / 7.0))
+    assert torch.allclose(laplace.var_b, torch.full((4,), 0.1))

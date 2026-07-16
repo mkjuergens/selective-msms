@@ -150,21 +150,10 @@ def _indexed_file(data_dir: Path, relative_path: str, size: int, digest: str) ->
     return path
 
 
-def discover_release_sources(data_dir: Path) -> tuple[list[dict], list[dict], Path]:
-    """Load and verify the frozen model files from data/models."""
+def discover_checkpoint_sources(data_dir: Path) -> list[dict]:
+    """Load and verify the released checkpoint/state files from data/models."""
     data_dir = data_dir.resolve()
     model_dir = data_dir / "models"
-
-    predictions = json.loads((model_dir / "predictions.json").read_text())
-    for item in predictions:
-        item["path"] = _indexed_file(
-            data_dir, item["path"], int(item["size_bytes"]), item["sha256"]
-        )
-    if len(predictions) != 7:
-        raise RuntimeError(f"Expected seven prediction tensors, found {len(predictions)}")
-    prediction_roles = {(item["model"], item["split"]) for item in predictions}
-    if len(prediction_roles) != len(predictions):
-        raise RuntimeError("Prediction index contains duplicate model/split entries")
 
     checkpoint_frame = pd.read_csv(model_dir / "checkpoints.tsv", sep="\t")
     checkpoints = []
@@ -177,11 +166,7 @@ def discover_release_sources(data_dir: Path) -> tuple[list[dict], list[dict], Pa
         })
     if len(checkpoints) != 18:
         raise RuntimeError(f"Expected 18 checkpoint/state files, found {len(checkpoints)}")
-
-    ranker = model_dir / "shared/ranker.pt"
-    if not ranker.is_file():
-        raise FileNotFoundError(ranker)
-    return predictions, checkpoints, ranker
+    return checkpoints
 
 
 def _zip_info(name: str) -> zipfile.ZipInfo:
@@ -248,38 +233,48 @@ Zenodo DOI: [{doi}](https://doi.org/{doi})
 
 Source commit: `{source_commit}`
 
-## Files
+## Pick What You Need
 
-- `source.zip`: repository snapshot, environment lock, and external-data manifest.
-- `results.zip`: validated scores, numerical results, analyses, figures, tables, and provenance.
-- `predictions.zip`: seven frozen fingerprint-prediction tensors; shared ranker metadata is stored once.
-- `checkpoints.zip`: 18 checkpoint/state files for the five released model groups.
-- `MANIFEST.tsv`: member-level sizes, roles, and SHA-256 hashes.
-- `SHA256SUMS`: hashes for the six companion files in this deposit. A checksum file cannot include its own stable hash.
+- `results.zip`: exact scores, tables, figures, and the browsable report.
+- `checkpoints.zip`: 18 model checkpoint/state files for new inference.
+- `source.zip`: the matching code, environment, and data notes.
+- `MANIFEST.tsv` and `SHA256SUMS`: archive contents and checksums.
 
-## Extraction
+## Fastest Route
 
-Extract `results.zip`, `predictions.zip`, and `checkpoints.zip` in the repository root. They write only below `data/`. The optional `source.zip` contains the exact repository snapshot below `source/`.
+Extract `results.zip` in the repository root, then run:
 
 ```bash
-unzip results.zip
-unzip predictions.zip
-unzip checkpoints.zip
 python scripts/evaluate.py validate --data data
 python scripts/evaluate.py report --data data --output outputs/report
 ```
 
-`report` requires no MassSpecGym download. Full candidate rescoring additionally requires the files and hashes listed in `EXTERNAL_DATA.tsv` in the repository.
+That is enough to reproduce the released figures and tables. No MassSpecGym download or GPU is needed.
 
-## Result Coverage
+## Rerun Predictions
 
-Official formula candidates include the formula MLP and transformer ensembles, MC Dropout, and Laplace. Paired capped and uncapped formula candidates include the formula MLP and transformer ensembles. Mass candidates include the formula-trained and mass-trained MLP ensembles. The evaluation temperature is `0.003` throughout the primary analysis.
+Extract `checkpoints.zip` and prepare the MassSpecGym v1 files described in the repository README:
+
+```bash
+python scripts/evaluate.py predict \
+  --data data \
+  --massspecgym-data /path/to/massspecgym-data \
+  --device cuda:0
+```
+
+The official spectrum and candidate files come from [MassSpecGym](https://huggingface.co/datasets/roman-bushuiev/MassSpecGym/tree/main/data); fingerprint and InChIKey helpers can be generated with [`ms-mole`](https://github.com/gdewael/ms-mole#reproduction-steps). The uncapped and paper-specific mass extensions must match `EXTERNAL_DATA.tsv` in `source.zip`.
+
+Predictions use about 18 GB locally. MC Dropout and Laplace samples may vary slightly across systems; the exact paper scores remain in `results.zip`.
+
+## Included Results
+
+The release covers the MLP and transformer ensembles, MC Dropout, Laplace, formula candidates, paired capped and uncapped formula candidates, mass candidates, temperature analysis, meta-models, and selective risk control. Primary results use `T_eval=0.003`.
 """
 
 
 def _write_manifest(path: Path, members: Sequence[ReleaseMember]) -> None:
     archive_order = {name: index for index, name in enumerate([
-        "source.zip", "results.zip", "predictions.zip", "checkpoints.zip",
+        "source.zip", "results.zip", "checkpoints.zip",
     ])}
     ordered = sorted(members, key=lambda row: (archive_order.get(row.archive, 99), row.archive_path))
     with path.open("w", newline="") as handle:
@@ -297,7 +292,7 @@ def _write_release_metadata(
     release_dir.mkdir(parents=True, exist_ok=True)
     (release_dir / "README.md").write_text(_release_readme(config, source_commit))
     _write_manifest(release_dir / "MANIFEST.tsv", members)
-    checksummed = ["README.md", "MANIFEST.tsv", "source.zip", "results.zip", "predictions.zip", "checkpoints.zip"]
+    checksummed = ["README.md", "MANIFEST.tsv", "source.zip", "results.zip", "checkpoints.zip"]
     (release_dir / "SHA256SUMS").write_text("".join(
         f"{sha256(release_dir / name)}  {name}\n" for name in checksummed
     ))
@@ -310,7 +305,7 @@ def build_release(repo: Path, data_dir: Path, release_dir: Path) -> dict:
     result_report = validate_paper_results(results_dir)
     if not result_report["passed"]:
         raise RuntimeError("Refusing to package invalid paper results")
-    predictions, checkpoints, ranker = discover_release_sources(data_dir)
+    checkpoints = discover_checkpoint_sources(data_dir)
 
     external = repo / "EXTERNAL_DATA.tsv"
     if not external.is_file():
@@ -326,28 +321,6 @@ def build_release(repo: Path, data_dir: Path, release_dir: Path) -> dict:
         for path in sorted(results_dir.rglob("*")) if path.is_file()
     ]
     members += _write_zip(release_dir / "results.zip", result_members)
-
-    prediction_members = [
-        (
-            item["path"],
-            f"data/{item['path'].relative_to(data_dir).as_posix()}",
-            "prediction",
-            item["model"],
-            item["split"],
-        )
-        for item in predictions
-    ]
-    prediction_members.extend([
-        (ranker, "data/models/shared/ranker.pt", "shared_prediction_metadata", "shared", ""),
-        (
-            data_dir / "models/predictions.json",
-            "data/models/predictions.json",
-            "metadata",
-            "",
-            "",
-        ),
-    ])
-    members += _write_zip(release_dir / "predictions.zip", prediction_members)
 
     checkpoint_members = [
         (
@@ -368,14 +341,17 @@ def build_release(repo: Path, data_dir: Path, release_dir: Path) -> dict:
     ))
     members += _write_zip(release_dir / "checkpoints.zip", checkpoint_members)
 
+    stale_predictions = release_dir / "predictions.zip"
+    if stale_predictions.exists():
+        stale_predictions.unlink()
     _write_release_metadata(release_dir, config, source_commit, members)
     return verify_release(release_dir)
 
 
 def verify_release(release_dir: Path) -> dict:
-    expected = {"README.md", "MANIFEST.tsv", "SHA256SUMS", "source.zip", "results.zip", "predictions.zip", "checkpoints.zip"}
+    expected = {"README.md", "MANIFEST.tsv", "SHA256SUMS", "source.zip", "results.zip", "checkpoints.zip"}
     observed = {path.name for path in release_dir.iterdir() if path.is_file() and not path.name.startswith(".")}
-    checks = [{"name": "exactly seven release files", "passed": observed == expected, "observed": sorted(observed)}]
+    checks = [{"name": "exactly six release files", "passed": observed == expected, "observed": sorted(observed)}]
     checksum_ok = True
     for line in (release_dir / "SHA256SUMS").read_text().splitlines():
         digest, name = line.split("  ", 1)
@@ -383,7 +359,7 @@ def verify_release(release_dir: Path) -> dict:
     checks.append({"name": "companion checksums match", "passed": checksum_ok, "observed": "SHA256SUMS"})
     bad_members = []
     zip_errors = []
-    for name in ["source.zip", "results.zip", "predictions.zip", "checkpoints.zip"]:
+    for name in ["source.zip", "results.zip", "checkpoints.zip"]:
         with zipfile.ZipFile(release_dir / name) as archive:
             error = archive.testzip()
             if error:
@@ -417,7 +393,9 @@ def verify_release(release_dir: Path) -> dict:
         "observed": {"source_commit": source_commit, "zenodo_doi": source_doi},
     })
     manifest = pd.read_csv(release_dir / "MANIFEST.tsv", sep="\t")
-    checks.append({"name": "manifest contains seven predictions and 18 checkpoints", "passed": int((manifest.role == "prediction").sum()) == 7 and int((manifest.role == "checkpoint").sum()) == 18, "observed": {"predictions": int((manifest.role == "prediction").sum()), "checkpoints": int((manifest.role == "checkpoint").sum())}})
+    n_predictions = int((manifest.role == "prediction").sum())
+    n_checkpoints = int((manifest.role == "checkpoint").sum())
+    checks.append({"name": "manifest contains no predictions and 18 checkpoints", "passed": n_predictions == 0 and n_checkpoints == 18, "observed": {"predictions": n_predictions, "checkpoints": n_checkpoints}})
     forbidden = [path for path in manifest.archive_path if Path(path).name.startswith("MassSpecGym") or Path(path).name == "massspecgym_118m_mira.json"]
     checks.append({"name": "no MassSpecGym data payloads are included", "passed": not forbidden, "observed": forbidden})
     report = {"passed": all(row["passed"] for row in checks), "checks": checks}

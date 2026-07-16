@@ -9,7 +9,7 @@ from pathlib import Path
 
 from ms_uq.paper.release import (
     build_release,
-    discover_release_sources,
+    discover_checkpoint_sources,
     validate_paper_results,
     verify_release,
 )
@@ -34,8 +34,8 @@ def main() -> None:
     release_dir = _resolve(repo, args.output)
 
     results = validate_paper_results(data_dir / "results")
-    predictions, checkpoints, _ = discover_release_sources(data_dir)
-    models = {"predictions": len(predictions), "checkpoints": len(checkpoints)}
+    checkpoints = discover_checkpoint_sources(data_dir)
+    models = {"checkpoints": len(checkpoints)}
 
     if args.command == "build":
         release = build_release(repo, data_dir, release_dir)

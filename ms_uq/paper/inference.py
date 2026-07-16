@@ -95,6 +95,8 @@ def main() -> None:
     ap.add_argument("--ens_dir", default="")
     ap.add_argument("--ens_metric", default="reranker")
     ap.add_argument("--passes", type=int, default=50)
+    ap.add_argument("--laplace_state", default="")
+    ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--metric", default="cosine")
     ap.add_argument("--aggregation", default="score")
     ap.add_argument("--temperature", type=float, default=0.003)
@@ -129,6 +131,8 @@ def main() -> None:
         ens_dir=args.ens_dir,
         ens_metric=args.ens_metric,
         passes=args.passes,
+        laplace_state=args.laplace_state,
+        seed=args.seed,
         temperature=args.temperature,
         device=args.device,
         batch_size=args.batch_size,

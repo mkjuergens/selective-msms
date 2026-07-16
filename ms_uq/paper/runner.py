@@ -25,6 +25,10 @@ import yaml
 
 from ms_uq.evaluation.candidate_sets import build_record_preserving_formula_cap, normalize_inchikey
 from ms_uq.paper.release import validate_paper_results
+from ms_uq.paper.evaluation import (
+    missing_paper_predictions,
+    regenerate_paper_predictions,
+)
 from ms_uq.evaluation.confidence_features import peak_count
 from ms_uq.paper.reporting import SGR_SINGLE_MEASURES, merge_meta_predictions, run_sgr_stability
 
@@ -180,10 +184,12 @@ class PaperEvaluationRunner:
     def _prediction_view(self, model_id: str, split: str) -> Path:
         """Expose the shared ranker beside one released prediction without duplicating it."""
         source_dir = self.paper_data / "models" / model_id / "predictions" / split
+        local_ranker = source_dir / "ranker.pt"
         shared_ranker = self.paper_data / "models/shared/ranker.pt"
+        ranker = local_ranker if local_ranker.is_file() else shared_ranker
         target = self.out / "input_views" / model_id / split
         target.mkdir(parents=True, exist_ok=True)
-        for source, name in [(source_dir / "fp_probs.pt", "fp_probs.pt"), (shared_ranker, "ranker.pt")]:
+        for source, name in [(source_dir / "fp_probs.pt", "fp_probs.pt"), (ranker, "ranker.pt")]:
             if not source.is_file():
                 raise FileNotFoundError(source)
             link = target / name
@@ -1145,6 +1151,7 @@ def add_full_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--quick-hashes", action="store_true", help="Smoke-only: avoid hashing files larger than 100 MiB")
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--num-workers", type=int, default=2)
+    parser.add_argument("--seed", type=int, default=42, help="Prediction sampling seed")
     parser.add_argument("--keep-raw-scores", action="store_true",
                         help="Retain temporary pre-provenance score bundles (roughly doubles score storage)")
 
@@ -1179,12 +1186,32 @@ def main() -> None:
     commands = parser.add_subparsers(dest="command", required=True)
     full = commands.add_parser("full", help="Run all candidate rescoring and paper analyses")
     add_full_arguments(full)
+    predict_parser = commands.add_parser("predict", help="Generate paper prediction caches from released checkpoints")
+    predict_parser.add_argument("--massspecgym-data", type=Path, required=True)
+    predict_parser.add_argument("--data", type=Path, default=Path("data"))
+    predict_parser.add_argument("--device", default="cuda:0")
+    predict_parser.add_argument("--batch-size", type=int, default=256)
+    predict_parser.add_argument("--num-workers", type=int, default=2)
+    predict_parser.add_argument("--seed", type=int, default=42)
+    predict_parser.add_argument("--overwrite", action="store_true")
     report_parser = commands.add_parser("report", help="Reproduce the report from released results without MassSpecGym data")
     report_parser.add_argument("--data", type=Path, default=Path("data"))
     report_parser.add_argument("--output", type=Path, default=Path("outputs/report"))
     validate_parser = commands.add_parser("validate", help="Validate released results without recomputing inference")
     validate_parser.add_argument("--data", type=Path, default=Path("data"))
     args = parser.parse_args()
+    if args.command == "predict":
+        result = regenerate_paper_predictions(
+            args.data,
+            args.massspecgym_data,
+            device=args.device,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            seed=args.seed,
+            overwrite=args.overwrite,
+        )
+        print(json.dumps({"predictions": result}, indent=2))
+        return
     if args.command == "report":
         result = reproduce_report(args.data, args.output)
         print(json.dumps(result, indent=2))
@@ -1199,6 +1226,18 @@ def main() -> None:
         parser.error("--bootstrap-replicates must be non-negative")
     if args.sgr_repeats < 1:
         parser.error("--sgr-repeats must be positive")
+    missing = missing_paper_predictions(args.data.resolve())
+    if missing:
+        print("[predict] generating missing checkpoint-based prediction caches: "
+              + ", ".join(f"{spec.model}/{spec.output_split}" for spec in missing))
+        regenerate_paper_predictions(
+            args.data,
+            args.massspecgym_data,
+            device=args.device,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            seed=args.seed,
+        )
     PaperEvaluationRunner(args).execute()
 
 

@@ -2,7 +2,7 @@
 
 Code and data for **"When Should We Trust the Annotation? Selective Prediction for Molecular Structure Retrieval from Mass Spectra"**.
 
-We study when molecular-structure retrieval predictions from tandem mass spectra (MS/MS) should be accepted or deferred. The repository evaluates fingerprint-, retrieval-, and representation-level confidence scores using risk-coverage curves and selective risk control on the [MassSpecGym](https://github.com/pluskal-lab/MassSpecGym) benchmark.
+Some annotations are easy calls. Others deserve a second look. This project studies how an MS/MS retrieval model can make that distinction: return confident molecular annotations and defer uncertain ones for further review.
 
 - **Paper:** [arXiv:2603.10950](https://arxiv.org/abs/2603.10950)
 - **Data and models:** [10.5281/zenodo.19108280](https://doi.org/10.5281/zenodo.19108280)
@@ -13,9 +13,9 @@ We study when molecular-structure retrieval predictions from tandem mass spectra
   <img src="docs/figures/figure_1.png" alt="Overview of the selective molecular-retrieval framework" width="700"/>
 </p>
 
-## Installation
+## Quick Start
 
-The exact environment used for the paper is recorded in `environment.lock.yml`.
+The paper environment is frozen in `environment.lock.yml`:
 
 ```bash
 conda env create -f environment.lock.yml
@@ -24,41 +24,47 @@ pip install -e ".[dev]"
 pytest -q
 ```
 
-CUDA is needed only for prediction generation and candidate rescoring. Reproducing the released tables, figures, and report runs on CPU.
+A CPU is enough to browse and validate the released results. Prediction generation and candidate rescoring are happier on a GPU.
 
-## Released Data
+## Pick Your Route
 
-The Zenodo record separates the large files so that only the required parts need to be downloaded:
+| Goal | What you need |
+|---|---|
+| Browse the paper results | `results.zip` |
+| Regenerate model predictions | `checkpoints.zip` and MassSpecGym |
+| Rerun the full evaluation | Everything above plus the candidate helpers |
+| Train a new ensemble | MassSpecGym and the training scripts |
 
-| File | Contents | Needed for |
-|---|---|---|
-| `results.zip` | Scores, metrics, tables, and figures | Report reproduction |
-| `predictions.zip` | Seven frozen fingerprint-prediction tensors | Full rescoring |
-| `checkpoints.zip` | The 18 model checkpoint/state files | Model provenance and new inference |
-| `source.zip` | Exact source snapshot | Archival reference |
-
-Extract the data archives in the repository root. They create `data/results/` and `data/models/`.
+The Zenodo files extract directly into `data/`:
 
 ```bash
 unzip results.zip
-unzip predictions.zip
 unzip checkpoints.zip
 ```
 
-Large MassSpecGym files are not included. Their exact filenames, sources, sizes, hashes, and preparation notes are listed in [`EXTERNAL_DATA.tsv`](EXTERNAL_DATA.tsv).
+## Reproduce the Results
 
-## Reproduce Results
-
-`results.zip` is sufficient to recreate the browsable report without downloading MassSpecGym:
+Already have `results.zip`? You are on the fast path. No MassSpecGym download or GPU is needed:
 
 ```bash
-python scripts/evaluate.py report --data data --output outputs/report
 python scripts/evaluate.py validate --data data
+python scripts/evaluate.py report --data data --output outputs/report
 ```
 
-Open `outputs/report/index.html` to browse the reproduced figures and tables.
+Open `outputs/report/index.html` for the figures and tables.
 
-For full candidate rescoring and analysis, extract the predictions and checkpoints and provide the external MassSpecGym directory:
+To regenerate the seven prediction tensors from the released checkpoints:
+
+```bash
+python scripts/evaluate.py predict \
+  --data data \
+  --massspecgym-data /path/to/massspecgym-data \
+  --device cuda:0
+```
+
+Predictions take about 18 GB locally. MC Dropout and Laplace samples can vary slightly across systems; the exact paper scores remain in `results.zip`.
+
+For the full candidate rescoring and analysis:
 
 ```bash
 python scripts/evaluate.py full \
@@ -68,11 +74,46 @@ python scripts/evaluate.py full \
   --device cuda:0
 ```
 
-The full evaluation is resumable and does not retrain the models or download data. It uses score-level ensemble aggregation, cosine similarity, preserved candidate records, and `T_eval=0.003`.
+The run is resumable, downloads nothing automatically, and uses `T_eval=0.003` throughout the primary analysis.
+
+## MassSpecGym Data
+
+The experiments use **MassSpecGym v1**, not v1.5. Download the spectrum table and the official formula/mass candidate lists from [MassSpecGym on Hugging Face](https://huggingface.co/datasets/roman-bushuiev/MassSpecGym/tree/main/data):
+
+```bash
+python -m pip install huggingface_hub
+hf download roman-bushuiev/MassSpecGym \
+  data/MassSpecGym.tsv \
+  data/molecules/MassSpecGym_retrieval_candidates_formula.json \
+  data/molecules/MassSpecGym_retrieval_candidates_mass.json \
+  --repo-type dataset \
+  --local-dir /path/to/massspecgym-download
+```
+
+Copy or symlink those three files into one working directory. The models also use cached 4096-bit Morgan fingerprints and 2D InChIKeys. Generate them with the [`ms-mole` preprocessing utility](https://github.com/gdewael/ms-mole#reproduction-steps), using its `inchi` and `morgan_2_4096` commands.
+
+The full list of expected filenames, sizes, hashes, and source notes lives in [`EXTERNAL_DATA.tsv`](EXTERNAL_DATA.tsv). In short, the working directory contains:
+
+- `MassSpecGym.tsv`;
+- the formula and mass candidate `.json` files;
+- `fp_4096.npy` and `inchis.npy`;
+- matching `_fps.npz` and `_inchi.npz` helpers.
+
+The uncapped appendix experiment additionally uses `massspecgym_118m_mira.json`. Once that mapping is available, build its test helpers with:
+
+```bash
+python scripts/prepare_uncapped_candidates.py \
+  --source_json /path/to/massspecgym-data/massspecgym_118m_mira.json \
+  --dataset_tsv /path/to/massspecgym-data/MassSpecGym.tsv \
+  --output_dir /path/to/massspecgym-data \
+  --fold test
+```
+
+One small but important note: the uncapped mapping and the mass pool used in the paper are project-specific extensions. They are not interchangeable with newer standard MassSpecGym files. For exact parity, use the hashes in `EXTERNAL_DATA.tsv`. This only affects raw rescoring; the exact extension results are already included in `results.zip`.
 
 ## Training
 
-Train the formula-candidate MLP ensemble used in the main experiments with:
+Train the formula-candidate MLP ensemble with:
 
 ```bash
 python scripts/train_ensemble.py \
@@ -89,26 +130,25 @@ python scripts/train_ensemble.py \
   --max_parallel 5
 ```
 
-Use `--candidate_setting mass --label_mode inchikey` with the corresponding mass-candidate files. `scripts/train.py` trains one model; `scripts/train_ensemble.py` launches independent ensemble members.
+Use `--candidate_setting mass --label_mode inchikey` for the mass-trained ensemble. `scripts/train.py` trains one model; `scripts/train_ensemble.py` launches the members.
 
-## Repository Layout
+## Repository Map
 
 ```text
 config/paper.yml                       Paper settings
-ms_uq/                                 Models, inference, uncertainty, and evaluation
-ms_uq/paper/                           Internal paper analyses and figures
-scripts/evaluate.py                    Reproduce or rerun the paper evaluation
+ms_uq/                                 Models and evaluation code
+scripts/evaluate.py                    Reproduce the paper results
 scripts/train.py                       Train one model
 scripts/train_ensemble.py              Train an ensemble
-scripts/prepare_uncapped_candidates.py Build the local uncapped formula helpers
+scripts/prepare_uncapped_candidates.py Build uncapped formula helpers
 tests/                                 Regression tests
 ```
 
-Generated data, models, and outputs are excluded from Git.
+Generated data, models, and outputs stay out of Git.
 
 ## Acknowledgements
 
-The model architecture, dataset pipeline, and ranking-loss implementation build on [ms-mole](https://github.com/gdewael/ms-mole) and its accompanying paper, ["Small molecule retrieval from tandem mass spectrometry: what are we optimizing for?"](https://arxiv.org/abs/2602.16507), by De Waele et al.
+The model architecture, dataset pipeline, and ranking loss build on [ms-mole](https://github.com/gdewael/ms-mole) and ["Small molecule retrieval from tandem mass spectrometry: what are we optimizing for?"](https://arxiv.org/abs/2602.16507) by De Waele et al.
 
 This work uses the [MassSpecGym](https://github.com/pluskal-lab/MassSpecGym) benchmark by Bushuiev et al.
 
@@ -125,4 +165,4 @@ This work uses the [MassSpecGym](https://github.com/pluskal-lab/MassSpecGym) ben
 
 ## License
 
-MIT License. See [LICENSE](LICENSE) for details.
+MIT License. See [LICENSE](LICENSE).

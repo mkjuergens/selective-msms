@@ -149,6 +149,7 @@ class MCDropoutSampler:
     model_cls: type
     passes: int
     device: str = "cuda:0"
+    seed: int = 42
 
     def __len__(self) -> int:
         return self.passes
@@ -157,6 +158,9 @@ class MCDropoutSampler:
         m = self.model_cls.load_from_checkpoint(self.ckpt, mc_dropout_eval=True)
         m = m.to(self.device).eval()
         for s in range(self.passes):
+            torch.manual_seed(self.seed + s)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(self.seed + s)
             yield (f"mc{s}", m)
         # clean up
         del m
