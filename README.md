@@ -2,7 +2,8 @@
 
 Code and data for **"When Should We Trust the Annotation? Selective Prediction for Molecular Structure Retrieval from Mass Spectra"**.
 
-Some annotations are easy calls. Others deserve a second look. This project studies how an MS/MS retrieval model can make that distinction: return confident molecular annotations and defer uncertain ones for further review.
+When do we know if an annotation of an MS/MS mass spectrum is correct with high probability?
+This project studies how an MS/MS retrieval model can make that distinction: return confident molecular annotations and defer uncertain ones for further review.
 
 - **Paper:** [arXiv:2603.10950](https://arxiv.org/abs/2603.10950)
 - **Data and models:** [10.5281/zenodo.19108280](https://doi.org/10.5281/zenodo.19108280)
@@ -15,13 +16,12 @@ Some annotations are easy calls. Others deserve a second look. This project stud
 
 ## Quick Start
 
-The paper environment is frozen in `environment.lock.yml`:
+The paper environment is in `environment.lock.yml`:
 
 ```bash
 conda env create -f environment.lock.yml
 conda activate selective_msms
-pip install -e ".[dev]"
-pytest -q
+pip install -e .
 ```
 
 A CPU is enough to browse and validate the released results. Prediction generation and candidate rescoring are happier on a GPU.
@@ -42,9 +42,9 @@ unzip results.zip
 unzip checkpoints.zip
 ```
 
-## Reproduce the Results
+## Reproduce results from the paper
 
-Already have `results.zip`? You are on the fast path. No MassSpecGym download or GPU is needed:
+When using `results.zip` , no MassSpecGym download or GPU is needed:
 
 ```bash
 python scripts/evaluate.py validate --data data
@@ -62,7 +62,7 @@ python scripts/evaluate.py predict \
   --device cuda:0
 ```
 
-Predictions take about 18 GB locally. MC Dropout and Laplace samples can vary slightly across systems; the exact paper scores remain in `results.zip`.
+Predictions are about 18 GB. MC Dropout and Laplace samples can vary slightly across systems, the exact paper scores are in `results.zip`.
 
 For the full candidate rescoring and analysis:
 
@@ -74,7 +74,6 @@ python scripts/evaluate.py full \
   --device cuda:0
 ```
 
-The run is resumable, downloads nothing automatically, and uses `T_eval=0.003` throughout the primary analysis.
 
 ## MassSpecGym Data
 
@@ -109,7 +108,7 @@ python scripts/prepare_uncapped_candidates.py \
   --fold test
 ```
 
-One small but important note: the uncapped mapping and the mass pool used in the paper are project-specific extensions. They are not interchangeable with newer standard MassSpecGym files. For exact parity, use the hashes in `EXTERNAL_DATA.tsv`. This only affects raw rescoring; the exact extension results are already included in `results.zip`.
+
 
 ## Training
 
@@ -144,7 +143,6 @@ scripts/prepare_uncapped_candidates.py Build uncapped formula helpers
 tests/                                 Regression tests
 ```
 
-Generated data, models, and outputs stay out of Git.
 
 ## Acknowledgements
 
